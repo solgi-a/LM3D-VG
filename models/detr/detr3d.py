@@ -1,7 +1,3 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-"""
-DETR model and criterion classes.
-"""
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -10,17 +6,7 @@ from .transformer3D import build_transformer, MLP
 
 
 class DETR3D(nn.Module):
-    """DETR module performing object detection; used as a backbone with encoding afterward."""
     def __init__(self, config_transformer, input_channels, class_output_shape, bbox_output_shape, aux_loss=False):
-        """ Initializes the model.
-        Parameters:
-            transformer: torch module of the transformer architecture. See transformer.py
-            input_channels: input channel of point cloud features
-            num_classes: number of object classes
-            num_queries: number of object queries, ie detection slot. This is the maximal number of objects
-                         DETR can detect in a single image. For COCO, we recommend 100 queries.
-            aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
-        """
         super().__init__()
         transformer_type = config_transformer.get('transformer_type', 'enc_dec')
         self.transformer_type = transformer_type
@@ -57,7 +43,6 @@ class DETR3D(nn.Module):
         self.aux_loss = aux_loss
 
     def forward(self, xyz, features, output, seed_xyz=None, seed_features=None, decode_vars=None):
-        """Returns pred_logits (B x num_queries x num_classes+1), pred_boxes, and optional aux_outputs."""
         B, N, _ = xyz.shape
         _, _, C = features.shape
 
@@ -98,9 +83,8 @@ class DETR3D(nn.Module):
         else:
             value = self.transformer(features, mask, query_embd_weight, pos_embd, src_mask=src_mask)
 
-        # returns: dec_layer * B * Query * C
         if 'dec' in self.transformer_type or self.transformer_type.split(';')[-1] == 'deformable':
-            hs = value[0]  # features_output
+            hs = value[0]
         elif self.transformer_type in ['enc']:
             hs = value
         else:
@@ -110,7 +94,7 @@ class DETR3D(nn.Module):
         outputs_class = self.class_embed(detr_feat)
         outputs_coord = self.bbox_embed(detr_feat)
         if 'dec' in self.transformer_type or self.transformer_type.split(';')[-1] == 'deformable':
-            output = {'pred_logits': outputs_class, 'pred_boxes': outputs_coord}  # final
+            output = {'pred_logits': outputs_class, 'pred_boxes': outputs_coord}
             output['detr_features'] = detr_feat
             if self.aux_loss:
                 output['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
@@ -126,7 +110,6 @@ class DETR3D(nn.Module):
         return output
 
     def _set_aux_loss(self, outputs_class, outputs_coord):
-        # workaround for torchscript, which rejects dicts with non-homogeneous values
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 

@@ -1,9 +1,6 @@
-""" Generic object detection evaluation (precision-recall, AP per class).
-From: https://github.com/facebookresearch/votenet/blob/master/utils/eval_det.py """
 import numpy as np
 
 def voc_ap(rec, prec, use_07_metric=False):
-    """ Compute VOC AP from precision/recall; use_07_metric selects the VOC07 11-point method. """
     if use_07_metric:
         ap = 0.
         for t in np.arange(0., 1.1, 0.1):
@@ -41,11 +38,8 @@ def get_iou_main(get_iou_func, args):
     return get_iou_func(*args)
 
 def eval_det_cls(pred, gt, ovthresh=0.25, use_07_metric=False, get_iou_func=get_iou):
-    """ Precision/recall/AP for a single class.
-        pred: {img_id: [(bbox, score)]}, gt: {img_id: [bbox]}
-    """
 
-    class_recs = {} # {img_id: {'bbox': bbox list, 'det': matched list}}
+    class_recs = {}
     npos = 0
     for img_id in gt.keys():
         bbox = np.array(gt[img_id])
@@ -65,7 +59,7 @@ def eval_det_cls(pred, gt, ovthresh=0.25, use_07_metric=False, get_iou_func=get_
             confidence.append(score)
             BB.append(box)
     confidence = np.array(confidence)
-    BB = np.array(BB) # (nd,4 or 8,3 or 6)
+    BB = np.array(BB)
 
     sorted_ind = np.argsort(-confidence)
     sorted_scores = np.sort(-confidence)
@@ -111,11 +105,8 @@ def eval_det_cls_wrapper(arguments):
     return (rec, prec, ap)
 
 def eval_det(pred_all, gt_all, ovthresh=0.25, use_07_metric=False, get_iou_func=get_iou):
-    """ Precision/recall/AP per class.
-        pred_all: {img_id: [(classname, bbox, score)]}, gt_all: {img_id: [(classname, bbox)]}
-    """
-    pred = {} # map {classname: pred}
-    gt = {} # map {classname: gt}
+    pred = {}
+    gt = {}
     for img_id in pred_all.keys():
         for classname, bbox, score in pred_all[img_id]:
             if classname not in pred: pred[classname] = {}
@@ -144,9 +135,8 @@ def eval_det(pred_all, gt_all, ovthresh=0.25, use_07_metric=False, get_iou_func=
 
 from multiprocessing import Pool
 def eval_det_multiprocessing(pred_all, gt_all, ovthresh=0.25, use_07_metric=False, get_iou_func=get_iou):
-    """ Same as eval_det but evaluates classes in a process pool. """
-    pred = {} # map {classname: pred}
-    gt = {} # map {classname: gt}
+    pred = {}
+    gt = {}
     for img_id in pred_all.keys():
         for classname, bbox, score in pred_all[img_id]:
             if classname not in pred: pred[classname] = {}

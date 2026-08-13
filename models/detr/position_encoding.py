@@ -1,14 +1,9 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-"""
-Various positional encodings for the transformer.
-"""
 import math
 import torch
 from torch import nn
 
 
 class PositionEmbeddingSine3D(nn.Module):
-    """Sine position embedding, as in "Attention is all you need", generalized to 3D."""
     def __init__(self, num_pos_feats=64, temperature=10000, scale=None):
         super().__init__()
         self.num_pos_feats = num_pos_feats
@@ -18,7 +13,7 @@ class PositionEmbeddingSine3D(nn.Module):
         self.scale = scale
 
     def forward(self, xyz):
-        B, N, C = xyz.shape  # C=3
+        B, N, C = xyz.shape
         xyz = xyz * self.scale
         dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=xyz.device)
         dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)

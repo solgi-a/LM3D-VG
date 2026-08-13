@@ -3,7 +3,6 @@ import torch
 from torch import nn
 
 class ScaledDotProductAttention(nn.Module):
-    '''Scaled dot-product attention.'''
 
     def __init__(self, d_model, d_k, d_v, h):
         super(ScaledDotProductAttention, self).__init__()
@@ -30,15 +29,14 @@ class ScaledDotProductAttention(nn.Module):
         nn.init.constant_(self.fc_o.bias, 0)
 
     def forward(self, queries, keys, values, attention_mask=None, attention_weights=None, way='mul'):
-        '''attention_mask (b_s, h, nq, nk): True indicates masking.'''
         b_s, nq = queries.shape[:2]
         nk = keys.shape[1]
         q = self.fc_q(queries)
-        q = q.view(b_s, nq, self.h, self.d_k).permute(0, 2, 1, 3)  # (b_s, h, nq, d_k)
-        k = self.fc_k(keys).view(b_s, nk, self.h, self.d_k).permute(0, 2, 3, 1)  # (b_s, h, d_k, nk)
-        v = self.fc_v(values).view(b_s, nk, self.h, self.d_v).permute(0, 2, 1, 3)  # (b_s, h, nk, d_v)
+        q = q.view(b_s, nq, self.h, self.d_k).permute(0, 2, 1, 3)
+        k = self.fc_k(keys).view(b_s, nk, self.h, self.d_k).permute(0, 2, 3, 1)
+        v = self.fc_v(values).view(b_s, nk, self.h, self.d_v).permute(0, 2, 1, 3)
 
-        att = torch.matmul(q, k) / np.sqrt(self.d_k)  # (b_s, h, nq, nk)
+        att = torch.matmul(q, k) / np.sqrt(self.d_k)
         if attention_weights is not None:
             if way == 'mul':
                 att = att * attention_weights
@@ -49,16 +47,15 @@ class ScaledDotProductAttention(nn.Module):
         if attention_mask is not None:
             att = att.masked_fill(attention_mask, -np.inf)
         att = torch.softmax(att, -1)
-        out = torch.matmul(att, v).permute(0, 2, 1, 3).contiguous().view(b_s, nq, self.h * self.d_v)  # (b_s, nq, h*d_v)
-        out = self.fc_o(out)  # (b_s, nq, d_model)
+        out = torch.matmul(att, v).permute(0, 2, 1, 3).contiguous().view(b_s, nq, self.h * self.d_v)
+        out = self.fc_o(out)
         return out
 
     def forward_faster(self, queries, keys, values, attention_pos, attention_weights, way='mul'):
-        '''attention_pos (b_s, nq, pk): masking indices, where pk << nk_real.'''
         b_s, nq, d_model = queries.shape
         nk = keys.shape[1]
         pk = attention_pos.shape[2]
-        q = self.fc_q(queries).view(b_s, nq, self.h, self.d_k).permute(0, 2, 1, 3)[: ,:, :, None, :]  # (b_s, h, nq, 1, d_k)
+        q = self.fc_q(queries).view(b_s, nq, self.h, self.d_k).permute(0, 2, 1, 3)[: ,:, :, None, :]
 
         attention_pos = attention_pos.view(b_s, nq*pk)
 
@@ -66,13 +63,13 @@ class ScaledDotProductAttention(nn.Module):
         v = self.fc_v(values)
         i_ind = torch.arange(b_s)[:, None].type_as(attention_pos) * nq
         attention_pos = attention_pos + i_ind.long()
-        k = k.view(b_s*nq, -1)[attention_pos].view(b_s, nq, pk, self.h, self.d_k)  # (b_s, nq, pk, h, dk)
-        v = v.view(b_s*nq, -1)[attention_pos].view(b_s, nq, pk, self.h, self.d_v)  # (b_s, nq, pk, h, dv)
+        k = k.view(b_s*nq, -1)[attention_pos].view(b_s, nq, pk, self.h, self.d_k)
+        v = v.view(b_s*nq, -1)[attention_pos].view(b_s, nq, pk, self.h, self.d_v)
 
-        k = k.permute(0, 3, 1, 4, 2)  # (b_s, h, nq, d_k, pk)
-        v = v.permute(0, 3, 1, 2, 4)  # (b_s, h, nq, pk, d_v)
+        k = k.permute(0, 3, 1, 4, 2)
+        v = v.permute(0, 3, 1, 2, 4)
 
-        att = torch.matmul(q, k) / np.sqrt(self.d_k)  # (b_s, h, nq, 1, p_k)
+        att = torch.matmul(q, k) / np.sqrt(self.d_k)
         if attention_weights is not None:
             attention_weights = attention_weights[:, :, :, None, :]
             if way == 'mul':
@@ -82,13 +79,12 @@ class ScaledDotProductAttention(nn.Module):
             else:
                 raise NotImplementedError(way)
         att = torch.softmax(att, -1)
-        out = torch.matmul(att, v)  # (b_s, h, nq, 1, d_v)
-        out = out.permute(0, 2, 1, 4, 3).contiguous().view(b_s, nq, self.h * self.d_v)  # (b_s, nq, h*d_v)
-        out = self.fc_o(out)  # (b_s, nq, d_model)
+        out = torch.matmul(att, v)
+        out = out.permute(0, 2, 1, 4, 3).contiguous().view(b_s, nq, self.h * self.d_v)
+        out = self.fc_o(out)
         return out
 
 class MultiHeadAttention(nn.Module):
-    '''Multi-head attention layer with Dropout and Layer Normalization.'''
 
     def __init__(self, d_model, d_k, d_v, h, dropout=.1, identity_map_reordering=False, can_be_stateful=False,
                  attention_module=None, attention_module_kwargs=None):

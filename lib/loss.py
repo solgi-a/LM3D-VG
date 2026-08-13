@@ -8,7 +8,7 @@ class SoftmaxRankingLoss(nn.Module):
 
     def forward(self, inputs, targets):
         assert inputs.shape == targets.shape
-
+        
         probs = F.softmax(inputs + 1e-8, dim=1)
 
         loss = -torch.sum(torch.log(probs + 1e-8) * targets, dim=1).mean()

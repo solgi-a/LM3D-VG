@@ -1,7 +1,3 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-# 
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
 
 import torch
 import torch.nn as nn
@@ -16,7 +12,6 @@ from utils.box_util import get_3d_box, get_3d_box_batch, box3d_iou
 
 
 def eval_ref_one_sample(pred_bbox, gt_bbox):
-    """ IoU between predicted and groundtruth bbox corners, both (8, 3). """
 
     iou = box3d_iou(pred_bbox, gt_bbox)
 
@@ -39,9 +34,10 @@ def construct_bbox_corners(center, box_size):
 
 def get_eval(data_dict, config, reference, use_lang_classifier=False, use_oracle=False, use_cat_rand=False,
              use_best=False, post_processing=None):
+
     objectness_scores = data_dict['objectness_scores']
     if objectness_scores.shape[2] == 2:
-        obj_pred_val = torch.argmax(objectness_scores, 2)  # B,K
+        obj_pred_val = torch.argmax(objectness_scores, 2)
     else:
         obj_pred_val = (objectness_scores>0).float().squeeze(-1)
 
@@ -73,7 +69,7 @@ def get_eval(data_dict, config, reference, use_lang_classifier=False, use_oracle
     data_dict["ref_acc"] = ref_acc.cpu().numpy().tolist()
 
     if use_best:
-        pred_ref = torch.argmax(data_dict["cluster_labels"], 1)  # (B,)
+        pred_ref = torch.argmax(data_dict["cluster_labels"], 1)
         data_dict['cluster_ref'] = data_dict["cluster_labels"]
     if use_cat_rand:
         cluster_preds = torch.zeros(cluster_labels.shape).cuda()
@@ -91,7 +87,7 @@ def get_eval(data_dict, config, reference, use_lang_classifier=False, use_oracle
             except IndexError:
                 cluster_preds[i, candidates] = 1
 
-        pred_ref = torch.argmax(cluster_preds, -1)  # (B,)
+        pred_ref = torch.argmax(cluster_preds, -1)
         data_dict['cluster_ref'] = cluster_preds
     else:
         pred_mask1 = pred_masks[0].repeat(len_nun_max, 1)
@@ -99,14 +95,14 @@ def get_eval(data_dict, config, reference, use_lang_classifier=False, use_oracle
             if i != 0:
                 pred_mask = pred_masks[i].repeat(len_nun_max, 1)
                 pred_mask1 = torch.cat([pred_mask1, pred_mask], dim=0)
-        pred_ref = torch.argmax(data_dict['cluster_ref'] * pred_mask1, 1)  # (B,)
+        pred_ref = torch.argmax(data_dict['cluster_ref'] * pred_mask1, 1)
 
     if use_oracle:
-        pred_center = data_dict['center_label']  # (B,MAX_NUM_OBJ,3)
-        pred_heading_class = data_dict['heading_class_label']  # B,K2
-        pred_heading_residual = data_dict['heading_residual_label']  # B,K2
-        pred_size_class = data_dict['size_class_label']  # B,K2
-        pred_size_residual = data_dict['size_residual_label']  # B,K2,3
+        pred_center = data_dict['center_label']
+        pred_heading_class = data_dict['heading_class_label']
+        pred_heading_residual = data_dict['heading_residual_label']
+        pred_size_class = data_dict['size_class_label']
+        pred_size_residual = data_dict['size_residual_label']
 
         pred_center = torch.gather(pred_center, 1, data_dict["object_assignment"].unsqueeze(2).repeat(1, 1, 3))
         pred_heading_class = torch.gather(pred_heading_class, 1, data_dict["object_assignment"])
@@ -115,18 +111,18 @@ def get_eval(data_dict, config, reference, use_lang_classifier=False, use_oracle
         pred_size_residual = torch.gather(pred_size_residual, 1,
                                           data_dict["object_assignment"].unsqueeze(2).repeat(1, 1, 3))
     else:
-        pred_center = data_dict['center']  # (B,K,3)
-        pred_heading_class = torch.argmax(data_dict['heading_scores'], -1)  # B,num_proposal
+        pred_center = data_dict['center']
+        pred_heading_class = torch.argmax(data_dict['heading_scores'], -1)
         pred_heading_residual = torch.gather(data_dict['heading_residuals'], 2,
-                                             pred_heading_class.unsqueeze(-1))  # B,num_proposal,1
-        pred_heading_class = pred_heading_class  # B,num_proposal
-        pred_heading_residual = pred_heading_residual.squeeze(2)  # B,num_proposal
-        pred_size_class = torch.argmax(data_dict['size_scores'], -1)  # B,num_proposal
+                                             pred_heading_class.unsqueeze(-1))
+        pred_heading_class = pred_heading_class
+        pred_heading_residual = pred_heading_residual.squeeze(2)
+        pred_size_class = torch.argmax(data_dict['size_scores'], -1)
         pred_size_residual = torch.gather(data_dict['size_residuals'], 2,
                                           pred_size_class.unsqueeze(-1).unsqueeze(-1).repeat(1, 1, 1,
-                                                                                             3))  # B,num_proposal,1,3
+                                                                                             3))
         pred_size_class = pred_size_class
-        pred_size_residual = pred_size_residual.squeeze(2)  # B,num_proposal,3
+        pred_size_residual = pred_size_residual.squeeze(2)
 
     data_dict["pred_mask"] = pred_masks
     data_dict["label_mask"] = label_masks
@@ -137,11 +133,11 @@ def get_eval(data_dict, config, reference, use_lang_classifier=False, use_oracle
     data_dict['pred_size_residual'] = pred_size_residual
 
     gt_ref = torch.argmax(data_dict["ref_box_label_list"], -1)
-    gt_center = data_dict['center_label']  # (B,MAX_NUM_OBJ,3)
-    gt_heading_class = data_dict['heading_class_label']  # B,K2
-    gt_heading_residual = data_dict['heading_residual_label']  # B,K2
-    gt_size_class = data_dict['size_class_label']  # B,K2
-    gt_size_residual = data_dict['size_residual_label']  # B,K2,3
+    gt_center = data_dict['center_label']
+    gt_heading_class = data_dict['heading_class_label']
+    gt_heading_residual = data_dict['heading_residual_label']
+    gt_size_class = data_dict['size_class_label']
+    gt_size_residual = data_dict['size_residual_label']
     lang_num = data_dict["lang_num"]
 
     ious = []
@@ -173,7 +169,6 @@ def get_eval(data_dict, config, reference, use_lang_classifier=False, use_oracle
                 iou = eval_ref_one_sample(pred_bbox, gt_bbox)
                 ious.append(iou)
 
-                # NOTE: get_3d_box() will return problematic bboxes
                 pred_bbox = construct_bbox_corners(pred_obb[0:3], pred_obb[3:6])
                 gt_bbox = construct_bbox_corners(gt_obb[0:3], gt_obb[3:6])
                 pred_bboxes.append(pred_bbox)
@@ -198,13 +193,15 @@ def get_eval(data_dict, config, reference, use_lang_classifier=False, use_oracle
     data_dict["pred_bboxes"] = pred_bboxes
     data_dict["gt_bboxes"] = gt_bboxes
 
+
+    
     obj_acc = torch.sum(
         (obj_pred_val == data_dict['objectness_label'].long()).float() * data_dict['objectness_mask']) / (
                           torch.sum(data_dict['objectness_mask']) + 1e-6)
     data_dict['obj_acc'] = obj_acc
     sem_cls_label = torch.gather(data_dict['sem_cls_label'], 1,
-                                 data_dict['object_assignment'])  # select (B,K) from (B,K2)
-    sem_cls_pred = data_dict['sem_cls_scores'].argmax(-1)  # (B,K)
+                                 data_dict['object_assignment'])
+    sem_cls_pred = data_dict['sem_cls_scores'].argmax(-1)
     sem_match = (sem_cls_label == sem_cls_pred).float()
     data_dict["sem_acc"] = (sem_match * data_dict["pred_mask"]).sum() / data_dict["pred_mask"].sum()
 

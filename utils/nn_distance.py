@@ -1,5 +1,3 @@
-""" Chamfer distance in Pytorch.
-From: https://github.com/facebookresearch/votenet/blob/master/utils/nn_distance.py """
 
 import torch
 import torch.nn as nn
@@ -7,7 +5,6 @@ import numpy as np
 
 
 def huber_loss(error, delta=1.0):
-    """ Huber loss: 0.5*x^2 for |x|<=delta, else 0.5*delta^2 + delta*(|x|-delta). error, loss: (d1,...,dk) """
     abs_error = torch.abs(error)
     quadratic = torch.clamp(abs_error, max=delta)
     linear = (abs_error - quadratic)
@@ -15,7 +12,6 @@ def huber_loss(error, delta=1.0):
     return loss
 
 def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
-    """ Nearest-neighbor distance between point sets pc1: (B,N,C) and pc2: (B,M,C). """
     N = pc1.shape[1]
     M = pc2.shape[1]
     pc1_expand_tile = pc1.unsqueeze(2).repeat(1,1,M,1)
@@ -23,18 +19,17 @@ def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
     pc_diff = pc1_expand_tile - pc2_expand_tile
     
     if l1smooth:
-        pc_dist = torch.sum(huber_loss(pc_diff, delta), dim=-1) # (B,N,M)
+        pc_dist = torch.sum(huber_loss(pc_diff, delta), dim=-1)
     elif l1:
-        pc_dist = torch.sum(torch.abs(pc_diff), dim=-1) # (B,N,M)
+        pc_dist = torch.sum(torch.abs(pc_diff), dim=-1)
     else:
-        pc_dist = torch.sum(pc_diff**2, dim=-1) # (B,N,M)
-    dist1, idx1 = torch.min(pc_dist, dim=2) # (B,N)
-    dist2, idx2 = torch.min(pc_dist, dim=1) # (B,M)
+        pc_dist = torch.sum(pc_diff**2, dim=-1)
+    dist1, idx1 = torch.min(pc_dist, dim=2)
+    dist2, idx2 = torch.min(pc_dist, dim=1)
     return dist1, idx1, dist2, idx2
 
 
 def knn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False, k=1):
-    """ K-nearest-neighbor distance between point sets pc1: (B,N,C) and pc2: (B,M,C). """
     N = pc1.shape[1]
     M = pc2.shape[1]
     pc1_expand_tile = pc1.unsqueeze(2).repeat(1, 1, M, 1)
@@ -42,11 +37,11 @@ def knn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False, k=1):
     pc_diff = pc1_expand_tile - pc2_expand_tile
 
     if l1smooth:
-        pc_dist = torch.sum(huber_loss(pc_diff, delta), dim=-1)  # (B,N,M)
+        pc_dist = torch.sum(huber_loss(pc_diff, delta), dim=-1)
     elif l1:
-        pc_dist = torch.sum(torch.abs(pc_diff), dim=-1)  # (B,N,M)
+        pc_dist = torch.sum(torch.abs(pc_diff), dim=-1)
     else:
-        pc_dist = torch.sum(pc_diff ** 2, dim=-1)  # (B,N,M)
+        pc_dist = torch.sum(pc_diff ** 2, dim=-1)
     if N < k:
         k = N
     dist, idx = pc_dist.topk(k, dim=1, largest=False)

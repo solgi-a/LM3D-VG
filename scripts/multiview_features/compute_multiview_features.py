@@ -11,12 +11,11 @@ from imageio import imread
 from PIL import Image
 from tqdm import tqdm
 
-sys.path.append(os.path.join(os.getcwd())) # HACK add the root folder
+sys.path.append(os.path.join(os.getcwd()))
 
 from lib.enet import create_enet_for_3d
 from lib.config import CONF
 
-# NOTE: read only!
 SCANNET_FRAME_ROOT = CONF.SCANNET_FRAMES
 SCANNET_FRAME_PATH = os.path.join(SCANNET_FRAME_ROOT, "{}")
 SCANNET_LIST = CONF.SCANNETV2_LIST
@@ -67,10 +66,10 @@ class EnetDataset(Dataset):
     def _load_image(self, file, image_dims):
         image = imread(file)
         image = self._resize_crop_image(image, image_dims)
-        if len(image.shape) == 3: # color image
-            image = np.transpose(image, [2, 0, 1])  # move feature to front
+        if len(image.shape) == 3:
+            image = np.transpose(image, [2, 0, 1])
             image = transforms.Normalize(mean=[0.496342, 0.466664, 0.440796], std=[0.277856, 0.28623, 0.291129])(torch.Tensor(image.astype(np.float32) / 255.0))
-        elif len(image.shape) == 2: # label image
+        elif len(image.shape) == 2:
             image = np.expand_dims(image, 0)
         else:
             raise ValueError

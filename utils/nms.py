@@ -1,7 +1,9 @@
 import numpy as np
 from utils.pc_utils import bbox_corner_dist_measure
 
-# boxes: (n,5) float array of (x1,y1,x2,y2,score)
+''' Ref: https://www.pyimagesearch.com/2015/02/16/faster-non-maximum-suppression-python/
+Ref: https://github.com/vickyboy47/nms-python/blob/master/nms.py 
+'''
 def nms_2d(boxes, overlap_threshold):
     x1 = boxes[:,0]
     y1 = boxes[:,1]
@@ -148,7 +150,7 @@ def nms_3d_faster_samecls(boxes, overlap_threshold, old_type=False):
 
 
 def nms_crnr_dist(boxes, conf, overlap_threshold):
-
+        
     I = np.argsort(conf)
     pick = []
     while (I.size!=0):

@@ -4,7 +4,6 @@ from torch.optim.optimizer import Optimizer
 
 
 class AdamW(Optimizer):
-    r"""AdamW (Decoupled Weight Decay Regularization, https://arxiv.org/abs/1711.05101)."""
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,
                  weight_decay=1e-2, amsgrad=False):
@@ -26,7 +25,6 @@ class AdamW(Optimizer):
             group.setdefault('amsgrad', False)
 
     def step(self, closure=None):
-        """Performs a single optimization step."""
         loss = None
         if closure is not None:
             loss = closure()

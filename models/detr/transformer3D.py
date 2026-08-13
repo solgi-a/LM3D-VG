@@ -1,12 +1,3 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-"""
-DETR Transformer class.
-
-Copy-paste from torch.nn.Transformer with modifications:
-    * positional encodings are passed in MHattention
-    * extra LN at the end of encoder is removed
-    * decoder returns a stack of activations from all decoding layers
-"""
 import math
 import copy
 from typing import Optional, List
@@ -18,7 +9,6 @@ from torch import nn, Tensor
 from ..transformer.attention import MultiHeadAttention as MyMultiHeadAttention
 
 
-# copied from the proposal code
 def decode_scores_boxes(output_dict, end_points, num_heading_bin, num_size_cluster, mean_size_arr, center_with_bias=False, quality_channel=False):
     pred_boxes = output_dict['pred_boxes']
     batch_size = pred_boxes.shape[0]
@@ -30,28 +20,27 @@ def decode_scores_boxes(output_dict, end_points, num_heading_bin, num_size_clust
 
     if center_with_bias:
         if 'transformer_weighted_xyz' in output_dict.keys():
-            end_points['transformer_weighted_xyz_all'] = output_dict['transformer_weighted_xyz_all']  # just for visualization
+            end_points['transformer_weighted_xyz_all'] = output_dict['transformer_weighted_xyz_all']
             transformer_xyz = output_dict['transformer_weighted_xyz']
             transformer_xyz = nn.functional.pad(transformer_xyz, (0, 3+num_heading_bin*2+num_size_cluster*4-transformer_xyz.shape[-1]))
-            pred_boxes = pred_boxes + transformer_xyz  # residual
+            pred_boxes = pred_boxes + transformer_xyz
         else:
             raise NotImplementedError('You should add it to the transformer final xyz')
             base_xyz = nn.functional.pad(base_xyz, (0, num_heading_bin*2+num_size_cluster*4))
-            pred_boxes = pred_boxes + base_xyz  # residual
+            pred_boxes = pred_boxes + base_xyz
     else:
         raise NotImplementedError('center without bias(for decoder): not Implemented')
 
-    center = pred_boxes[:,:,0:3] # (batch_size, num_proposal, 3) TODO RESIDUAL
+    center = pred_boxes[:,:,0:3]
     end_points['center'] = center
 
-    heading_scores = pred_boxes[:,:,3:3+num_heading_bin]  # theta; todo change it
+    heading_scores = pred_boxes[:,:,3:3+num_heading_bin]
     heading_residuals_normalized = pred_boxes[:,:,3+num_heading_bin:3+num_heading_bin*2]
-    end_points['heading_scores'] = heading_scores # Bxnum_proposalxnum_heading_bin
-    end_points['heading_residuals_normalized'] = heading_residuals_normalized # Bxnum_proposalxnum_heading_bin (should be -1 to 1)
-    end_points['heading_residuals'] = heading_residuals_normalized * (np.pi/num_heading_bin) # Bxnum_proposalxnum_heading_bin
+    end_points['heading_scores'] = heading_scores
+    end_points['heading_residuals_normalized'] = heading_residuals_normalized
+    end_points['heading_residuals'] = heading_residuals_normalized * (np.pi/num_heading_bin)
 
     size_scores = pred_boxes[:,:,3+num_heading_bin*2:3+num_heading_bin*2+num_size_cluster]
-    # Bxnum_proposalxnum_size_clusterx3
     size_residuals_normalized = pred_boxes[:,:,3+num_heading_bin*2+num_size_cluster:3+num_heading_bin*2+num_size_cluster*4].view([batch_size, num_proposal, num_size_cluster, 3])
 
     end_points['size_scores'] = size_scores
@@ -91,7 +80,6 @@ class Transformer3D(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, src, mask, query_embed, pos_embed, static_feat=None, src_mask=None, src_position=None, seed_position=None, seed_feat=None, seed_embed=None, decode_vars=None):
-        # flatten BxNxC to NxBxC
         B, N, C = src.shape
         src = src.permute(1, 0, 2)
         if pos_embed is not None:
@@ -101,15 +89,15 @@ class Transformer3D(nn.Module):
             memory = src
         else:
             memory = seed_feat.permute(1, 0, 2)
-        if not self.have_decoder:  # TODO LOCAL ATTENTION
-            return memory.permute(1, 0, 2)  # just return it
+        if not self.have_decoder:
+            return memory.permute(1, 0, 2)
 
         if self.attention_type.split(';')[-1] == 'deformable':
             assert query_embed is None, 'deformable: query embedding should be None'
             query_embed = torch.zeros_like(src)
             tgt = src
             tgt_mask = src_mask
-        else:  # just Add It
+        else:
             raise NotImplementedError('Not Deformable')
 
         if src_position is not None:
@@ -124,17 +112,15 @@ class Transformer3D(nn.Module):
             tgt_position = src_position
             seed_position = src_position
 
-        # self-attention:  tgt -> tgt
-        # cross-attention: src/memory -> tgt
         decoder_output = self.decoder(tgt, memory, tgt_mask=tgt_mask, memory_key_padding_mask=mask,
                                       pos=pos_embed, query_pos=query_embed, src_position=seed_position, tgt_position=tgt_position, decode_vars=decode_vars)
 
         if src_position is not None:
             hs, finpos = decoder_output
-            return hs.transpose(1, 2), memory.permute(1, 0, 2), finpos.transpose(1, 2) # .view(B, N, C)
+            return hs.transpose(1, 2), memory.permute(1, 0, 2), finpos.transpose(1, 2)
         else:
             hs = decoder_output
-        return hs.transpose(1, 2), memory.permute(1, 0, 2)  # .view(B, N, C)
+        return hs.transpose(1, 2), memory.permute(1, 0, 2)
 
 
 class TransformerEncoder(nn.Module):
@@ -223,8 +209,8 @@ def attn_with_batch_mask(layer_attn, q, k, src, src_mask, src_key_padding_mask):
     return src2, attn
 
 
-class MultiheadPositionalAttention(nn.Module):  # nearby points
-    def __init__(self, d_model, nhead, dropout, attn_type='nearby'):  # nearby; interpolation
+class MultiheadPositionalAttention(nn.Module):
+    def __init__(self, d_model, nhead, dropout, attn_type='nearby'):
         super().__init__()
         assert attn_type in ['nearby', 'nearby_20','interpolation', 'interpolation_10', 'interpolation_20', 'dist', 'dist_10',
                              'input', 'multiply', 'multiply_20', 'multiply_all', 'myAdd', 'myAdd_20', 'myAdd_all', 'myAdd_5_faster']
@@ -237,19 +223,10 @@ class MultiheadPositionalAttention(nn.Module):  # nearby points
 
     @staticmethod
     def rotz_batch_pytorch(t):
-        """
-        Rotation about the z-axis
-        :param t: (x1,x2,...,xn)
-        :return: output:(x1,x2,...,xn,3,3)
-        """
-        input_shape = t.shape  # (B, num_proposal)
+        input_shape = t.shape
         output = torch.zeros(tuple(list(input_shape)+[3,3])).type_as(t)
         c = torch.cos(t)
         s = torch.sin(t)
-        # rot_mat is already transposed, so that x'A' = (Ax)'
-        # [[cos(t), -sin(t), 0],
-        #  [sin(t), cos(t),   0],
-        #  [0,     0,        1]]
         output[...,0,0] = c
         output[...,0,1] = -s
         output[...,1,0] = s
@@ -257,15 +234,15 @@ class MultiheadPositionalAttention(nn.Module):  # nearby points
         output[...,2,2] = 1
         return output
 
-    def forward(self, query, key, value, attn_mask, key_padding_mask, src_position, tgt_position, decode_vars=None):  # TODO Check Decode Vars
-        if self.attn_type in ['input']: # just using attn_mask from input
+    def forward(self, query, key, value, attn_mask, key_padding_mask, src_position, tgt_position, decode_vars=None):
+        if self.attn_type in ['input']:
             return attn_with_batch_mask(self.attention, q=query, k=key, src=value, src_mask=attn_mask,
                                         src_key_padding_mask=key_padding_mask)
         N, B, C = src_position.shape
         N2, B2, C2 = tgt_position.shape
         assert C == 3 and C2 == 3
         if C != 3 and C2 != 3 and C == C2:
-            C2 = C = 3  # only xyz is useful
+            C2 = C = 3
             src_position = src_position[:, :, :3]
             tgt_position = tgt_position[:, :, :3]
         assert B2 == B and C2 == C
@@ -274,21 +251,20 @@ class MultiheadPositionalAttention(nn.Module):  # nearby points
         dist = torch.sum((X - Y).pow(2), dim=-1)
         dist = dist.permute(2, 0, 1)
 
-        if self.attn_type in ['multiply', 'multiply_20', 'multiply_all', 'myAdd', 'myAdd_20', 'myAdd_all', 'myAdd_5_faster']:  # similiar as pointnet
+        if self.attn_type in ['multiply', 'multiply_20', 'multiply_all', 'myAdd', 'myAdd_20', 'myAdd_all', 'myAdd_5_faster']:
             assert attn_mask is None, 'positional attn: mask should be none'
             near_kth = 5
             kth_split = self.attn_type.split('_')
-            if len(kth_split) != 1:  # not default
+            if len(kth_split) != 1:
                 if kth_split[1] != 'all':
                     near_kth = int(kth_split[1])
                 else:
                     near_kth = dist.shape[-1]
             dist_min, dist_pos = torch.topk(dist, k=near_kth, dim=-1, largest=False, sorted=False)
-            # weight
             dist_min = dist_min.sqrt()
             dist_recip = 1 / (dist_min + 1e-1)
             norm = torch.sum(dist_recip, dim=2, keepdim=True)
-            weight = (dist_recip / norm).detach()  # B * N * near_kth ; grad notuseful
+            weight = (dist_recip / norm).detach()
             if 'myAdd' in self.attn_type:
                 if 'faster' in self.attn_type:
                     ret = self.attention.forward_faster(queries=query.permute(1, 0, 2), keys=key.permute(1, 0, 2), values=value.permute(1, 0, 2),
@@ -296,13 +272,13 @@ class MultiheadPositionalAttention(nn.Module):  # nearby points
                 else:
                     src_mask = torch.zeros(dist.shape).to(dist.device) - 1e9
                     src_mask.scatter_(2, dist_pos, weight)
-                    src_mask = src_mask.permute(0, 2, 1) # V*k'*q
+                    src_mask = src_mask.permute(0, 2, 1)
                     ret = self.attention(queries=query.permute(1, 0 ,2), keys=key.permute(1, 0, 2), values=value.permute(1, 0, 2),
                                          attention_weights=src_mask[:, None, :, :], way='add')
             else:
                 src_mask = torch.zeros(dist.shape).to(dist.device)
                 src_mask.scatter_(2, dist_pos, weight)
-                src_mask = src_mask.permute(0, 2, 1) # V*k'*q
+                src_mask = src_mask.permute(0, 2, 1)
                 ret = self.attention(queries=query.permute(1, 0 ,2), keys=key.permute(1, 0, 2), values=value.permute(1, 0, 2),
                                      attention_weights=src_mask[:, None, :, :], way='mul')
             ret = ret.permute(1, 0, 2)
@@ -333,7 +309,7 @@ class TransformerDecoderLayer(nn.Module):
             if offset_size != 3:
                 self.linear_offset = MLP(d_model, d_model, offset_size, 3, norm=nn.LayerNorm)
             else:
-                self.linear_offset = nn.Linear(d_model, offset_size)  # center forward
+                self.linear_offset = nn.Linear(d_model, offset_size)
                 self.linear_offset.weight.data.zero_()
                 self.linear_offset.bias.data.zero_()
             assert deformable_type is not None
@@ -342,7 +318,6 @@ class TransformerDecoderLayer(nn.Module):
             self.multihead_attn = MultiheadPositionalAttention(d_model, nhead, dropout=dropout, attn_type=src_attn_type)
         else:
             raise NotImplementedError(attention_type)
-        # Implementation of Feedforward model
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
@@ -475,7 +450,7 @@ def build_transformer(args):
             normalize_before=args.pre_norm,
             return_intermediate_dec=True,
             have_encoder=False,
-            have_decoder=True,  # using input position
+            have_decoder=True,
             attention_type=transformer_type,
             deformable_type=args.get('deformable_type','nearby'),
             offset_size=args.get('offset_size', 3)
@@ -488,8 +463,7 @@ def gelu(x):
 
 
 def _get_activation_fn(activation):
-    """Return an activation function given a string"""
-    print(activation, '<< transformer activation', flush=True)  # TODO REMOVE IT
+    print(activation, '<< transformer activation', flush=True)
     if activation == "relu":
         return F.relu
     if activation == "gelu":
@@ -501,7 +475,6 @@ def _get_activation_fn(activation):
 
 
 class MLP(nn.Module):
-    """ Very simple multi-layer perceptron (also called FFN)"""
 
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers, norm=None):
         super().__init__()
@@ -531,5 +504,4 @@ if __name__ == '__main__':
     query_pos = torch.randn(256, 1, 288)
     tgt_position = torch.randn(256, 1, 3)
     src_position = torch.randn(256, 1, 3)
-    # profile(model, (tgt=tgt, memory=memory, query_pos=query_pos, tgt_position=tgt_position, src_position=src_position))
     profile(model, (tgt, None, memory, None, None, None, query_pos, src_position, tgt_position))

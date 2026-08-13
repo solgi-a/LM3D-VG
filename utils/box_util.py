@@ -1,5 +1,3 @@
-""" Helper functions for calculating 2D and 3D bounding box IoU.
-From: https://github.com/facebookresearch/votenet/blob/master/utils/box_util.py """
 
 from __future__ import print_function
 
@@ -7,7 +5,6 @@ import numpy as np
 from scipy.spatial import ConvexHull
 
 def polygon_clip(subjectPolygon, clipPolygon):
-   """ Sutherland-Hodgman polygon clipping. clipPolygon must be convex; points counter-clockwise ordered. """
    def inside(p):
       return(cp2[0]-cp1[0])*(p[1]-cp1[1]) > (cp2[1]-cp1[1])*(p[0]-cp1[0])
  
@@ -50,7 +47,6 @@ def poly_area_batch(x,y):
         - np.matmul(np.expand_dims(y, axis=1), np.roll(np.expand_dims(x, axis=2), 1, axis=1))).squeeze(axis=(1,2))
 
 def convex_hull_intersection(p1, p2):
-    """ p1, p2: lists of (x,y) hull vertices. Returns intersection points and its area. """
     inter_p = polygon_clip(p1,p2)
     if inter_p is not None:
         hull_inter = ConvexHull(inter_p)
@@ -59,7 +55,6 @@ def convex_hull_intersection(p1, p2):
         return None, 0.0  
 
 def box3d_vol(corners):
-    ''' corners: (8,3), no assumption on axis direction '''
     a = np.sqrt(np.sum((corners[0,:] - corners[1,:])**2))
     b = np.sqrt(np.sum((corners[1,:] - corners[2,:])**2))
     c = np.sqrt(np.sum((corners[0,:] - corners[4,:])**2))
@@ -71,7 +66,7 @@ def is_clockwise(p):
     return np.dot(x,np.roll(y,1))-np.dot(y,np.roll(x,1)) > 0
 
 def box3d_iou(corners1, corners2):
-    ''' 3D bounding box IoU. corners1, corners2: (8,3), assume up direction is Z. '''
+
     x_min_1, x_max_1, y_min_1, y_max_1, z_min_1, z_max_1 = get_box3d_min_max(corners1)
     x_min_2, x_max_2, y_min_2, y_max_2, z_min_2, z_max_2 = get_box3d_min_max(corners2)
     xA = np.maximum(x_min_1, x_min_2)
@@ -88,7 +83,7 @@ def box3d_iou(corners1, corners2):
     return iou
 
 def get_box3d_min_max(corner):
-    ''' Min/max coords for an axis-aligned 3D box. corner: (8,3), up direction is Z. '''
+
     min_coord = corner.min(axis=0)
     max_coord = corner.max(axis=0)
     x_min, x_max = min_coord[0], max_coord[0]
@@ -98,7 +93,7 @@ def get_box3d_min_max(corner):
     return x_min, x_max, y_min, y_max, z_min, z_max
 
 def box3d_iou_batch(corners1, corners2):
-    ''' Batched 3D bounding box IoU, axis-aligned only. corners1, corners2: (N,8,3), up direction is Z. '''
+    
     x_min_1, x_max_1, y_min_1, y_max_1, z_min_1, z_max_1 = get_box3d_min_max_batch(corners1)
     x_min_2, x_max_2, y_min_2, y_max_2, z_min_2, z_max_2 = get_box3d_min_max_batch(corners2)
     xA = np.maximum(x_min_1, x_min_2)
@@ -115,7 +110,7 @@ def box3d_iou_batch(corners1, corners2):
     return iou
 
 def get_box3d_min_max_batch(corner):
-    ''' Min/max coords for axis-aligned 3D boxes. corner: (N,8,3), up direction is Z. '''
+
     min_coord = corner.min(axis=1)
     max_coord = corner.max(axis=1)
     x_min, x_max = min_coord[:, 0], max_coord[:, 0]
@@ -125,7 +120,6 @@ def get_box3d_min_max_batch(corner):
     return x_min, x_max, y_min, y_max, z_min, z_max
 
 def get_iou(bb1, bb2):
-    """ IoU of two 2D boxes. bb1, bb2: dict with keys 'x1','y1' (top-left), 'x2','y2' (bottom-right). """
     assert bb1['x1'] < bb1['x2']
     assert bb1['y1'] < bb1['y2']
     assert bb2['x1'] < bb2['x2']
@@ -150,12 +144,10 @@ def get_iou(bb1, bb2):
     return iou
 
 def box2d_iou(box1, box2):
-    ''' box1, box2: (xmin,ymin,xmax,ymax) '''
     return get_iou({'x1':box1[0], 'y1':box1[1], 'x2':box1[2], 'y2':box1[3]}, \
         {'x1':box2[0], 'y1':box2[1], 'x2':box2[2], 'y2':box2[3]})
 
 def roty(t):
-    """Rotation about the y-axis."""
     c = np.cos(t)
     s = np.sin(t)
     return np.array([[c,  0,  s],
@@ -163,7 +155,6 @@ def roty(t):
                     [-s, 0,  c]])
 
 def roty_batch(t):
-    """Rotation about the y-axis. t: (x1,...,xn) -> (x1,...,xn,3,3)"""
     input_shape = t.shape
     output = np.zeros(tuple(list(input_shape)+[3,3]))
     c = np.cos(t)
@@ -177,7 +168,6 @@ def roty_batch(t):
 
 
 def get_3d_box(box_size, heading_angle, center):
-    ''' box_size: (l,w,h), heading_angle: radians clockwise from +x axis, center: xyz. Returns (8,3) box corners. '''
     R = roty(heading_angle)
     l,w,h = box_size
     x_corners = [l/2,l/2,-l/2,-l/2,l/2,l/2,-l/2,-l/2]
@@ -191,7 +181,6 @@ def get_3d_box(box_size, heading_angle, center):
     return corners_3d
 
 def get_3d_box_batch(box_size, heading_angle, center):
-    ''' box_size, center: [...,3], heading_angle: [...]. Returns corners [...,8,3]. '''
     input_shape = heading_angle.shape
     R = roty_batch(heading_angle)
     l = np.expand_dims(box_size[...,0], -1)

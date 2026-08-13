@@ -5,25 +5,22 @@ import numpy as np
 import sys
 import os
 
-try:
-    from pointnet2_ops.pointnet2_modules import PointnetSAModuleVotes, PointnetFPModule
-except ImportError:
-    # ABLATION: Python fallback selected by ABLATION.POINTNET_IMPL (default: the
-    # optimized pointnet_py_adv). The CUDA extension above still wins when installed.
-    from experiments.ablation.ablation_config import ABLATION
-    if ABLATION.POINTNET_IMPL == "pointnet2_python":
-        from pointnet2_python.pointnet2_modules import PointnetSAModuleVotes, PointnetFPModule
-    else:
-        from pointnet_py_adv.pn import PointnetSAModuleVotes, PointnetFPModule
+from experiments.ablation.ablation_config import ABLATION
+from pointnet import load as _load_pointnet
+
+(PointnetSAModuleVotes, PointnetFPModule), _POINTNET_TIER = _load_pointnet(
+    "PointnetSAModuleVotes", "PointnetFPModule",
+    preferred=getattr(ABLATION, "POINTNET_IMPL", None))
 
 class Pointnet2Backbone(nn.Module):
-    r"""Pointnet++ single-scale grouping backbone. input_feature_dim e.g. 3 for RGB."""
     def __init__(self, args, input_feature_dim=0):
         super().__init__()
 
         self.input_feature_dim = input_feature_dim
 
+
         if args.use_multiview:
+
             num_param1 = 64
             num_param2 = 128
 
@@ -78,7 +75,6 @@ class Pointnet2Backbone(nn.Module):
         return xyz, features
 
     def forward(self, data_dict):
-        r"""Point cloud is (B, N, 3 + input_feature_dim), formatted as (x, y, z, features...)."""
         
         pointcloud = data_dict["point_clouds"]
 
@@ -92,16 +88,16 @@ class Pointnet2Backbone(nn.Module):
         data_dict['sa1_features'] = features
 
 
-        xyz, features, fps_inds = self.sa2(xyz, features) # this fps_inds is just 0,1,...,1023
+        xyz, features, fps_inds = self.sa2(xyz, features)
         data_dict['sa2_inds'] = fps_inds
         data_dict['sa2_xyz'] = xyz
         data_dict['sa2_features'] = features
 
-        xyz, features, fps_inds = self.sa3(xyz, features) # this fps_inds is just 0,1,...,511
+        xyz, features, fps_inds = self.sa3(xyz, features)
         data_dict['sa3_xyz'] = xyz
         data_dict['sa3_features'] = features
 
-        xyz, features, fps_inds = self.sa4(xyz, features) # this fps_inds is just 0,1,...,255
+        xyz, features, fps_inds = self.sa4(xyz, features)
         data_dict['sa4_xyz'] = xyz
         data_dict['sa4_features'] = features
 
@@ -110,7 +106,7 @@ class Pointnet2Backbone(nn.Module):
         data_dict['fp2_features'] = features
         data_dict['fp2_xyz'] = data_dict['sa2_xyz']
         num_seed = data_dict['fp2_xyz'].shape[1]
-        data_dict['fp2_inds'] = data_dict['sa1_inds'][:,0:num_seed] # indices among the entire input point clouds
+        data_dict['fp2_inds'] = data_dict['sa1_inds'][:,0:num_seed]
         return data_dict
 
 if __name__=='__main__':

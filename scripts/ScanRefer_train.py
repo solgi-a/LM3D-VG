@@ -15,13 +15,13 @@ from torch.utils.data import DataLoader
 from datetime import datetime
 from copy import deepcopy
 
-sys.path.append(os.path.join(os.getcwd())) # HACK add the root folder
+sys.path.append(os.path.join(os.getcwd()))
 
 from data.scannet.model_util_scannet import ScannetDatasetConfig
 from lib.dataset import ScannetReferenceDataset
 from lib.solver import Solver
 from lib.config import CONF
-from experiments.ablation import ablation_config, ablation_hooks  # ABLATION: revision experiments
+from experiments.ablation import ablation_config, ablation_hooks
 from models.refnet import RefNet
 from scripts.utils.AdamW import AdamW
 from scripts.utils.script_utils import set_params_lr_dict
@@ -31,13 +31,8 @@ SCANREFER_VAL = json.load(open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_
 
 DC = ScannetDatasetConfig()
 
-#print(sys.path, '<< sys path')
 
 def comp_weight(our_model, weight):
-    """Warm-starts our_model from weight, copying only tensors matching by name and shape.
-    The load is silently partial by design, so we log what loaded/skipped below; the final
-    strict=True is safe since the dict being loaded is built from the model's own state_dict.
-    """
     our_model_state_dict = our_model.state_dict()
     our_model_state_dict_keys = list(our_model_state_dict.keys())
     weight_keys = list(weight.keys())
@@ -59,7 +54,6 @@ def comp_weight(our_model, weight):
         print(f"[WARM START] {len(shape_mismatch)} tensor(s) matched by name but NOT by "
               f"shape and were skipped, e.g. {shape_mismatch[:3]}")
     if total and random_init / total > 0.5:
-        # Past half, "fine-tuning" is not an honest description of the run.
         print(f"[WARM START] WARNING: more than half of this model is randomly "
               f"initialised. The checkpoint does not match this architecture -- check "
               f"--fusion_variant. Training will proceed, but do not describe this run "
@@ -69,7 +63,7 @@ def comp_weight(our_model, weight):
 
 
 def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config, augment, shuffle=True):
-    dataset = ablation_hooks.build_dataset(  # ABLATION: was ScannetReferenceDataset(
+    dataset = ablation_hooks.build_dataset(
         args = args,
         scanrefer=scanrefer[split],
         scanrefer_new=scanrefer_new[split],
@@ -84,10 +78,6 @@ def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config
         augment=augment,
         shuffle=shuffle
     )
-    # Background workers prefetch batches so the GPU isn't blocked on serial __getitem__
-    # (~20ms each, mostly point-cloud ops). Worker count is capped at CPU count since each
-    # worker forks its own dataset copy; LAZY_LANG_DATA keeps that copy's language data
-    # ~1.8GB instead of ~29GB, making the extra RAM affordable.
     workers = getattr(args, "num_workers", None)
     if workers is None:
         workers = min(4, max(0, (os.cpu_count() or 1) - 1))
@@ -97,7 +87,7 @@ def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config
         loader_kwargs.update(
             num_workers=workers,
             prefetch_factor=getattr(args, "prefetch_factor", 3),
-            persistent_workers=True,     # don't respawn every epoch
+            persistent_workers=True,
             pin_memory=torch.cuda.is_available(),
         )
 
@@ -113,7 +103,7 @@ def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config
 
 def get_model(args):
     input_channels = int(args.use_multiview) * 128 + int(args.use_normal) * 3 + int(args.use_color) * 3 + int(not args.no_height)
-    model = ablation_hooks.build_model(  # ABLATION: was RefNet(
+    model = ablation_hooks.build_model(
         args=args,
         num_class=DC.num_class,
         num_heading_bin=DC.num_heading_bin,
@@ -127,7 +117,7 @@ def get_model(args):
         dataset_config=DC
     )
 
-    if args.use_pretrained and not ablation_hooks.skip_pretrained_detector():  # ABLATION
+    if args.use_pretrained and not ablation_hooks.skip_pretrained_detector():
         if args.detector == "VN":
             
             print("\nloading pretrained VoteNet...")
@@ -154,18 +144,15 @@ def get_model(args):
             model.proposal = pretrained_model.proposal
 
             if args.no_detection:
-                # freeze pointnet++ backbone
                 for param in model.backbone_net.parameters():
                     param.requires_grad = False
 
-                # freeze voting
                 for param in model.vgen.parameters():
                     param.requires_grad = False
 
-                # freeze detector
                 for param in model.proposal.parameters():
                     param.requires_grad = False
-
+                    
     model = model.cuda()
 
     return model
@@ -188,7 +175,6 @@ def get_solver(args, dataloader):
                 'match': {'lr': args.match_lr},
             }
 
-    # scheduler parameters for training solely the detection pipeline
     lr_decay_rate = 0.1 if args.no_reference else None
     bn_decay_step = 20 if args.no_reference else None
     bn_decay_rate = 0.5 if args.no_reference else None
@@ -214,7 +200,7 @@ def get_solver(args, dataloader):
         elif isinstance(lr_decay_step, dict):
             if lr_decay_step['type'] != 'cosine':
                 raise NotImplementedError('lr dict type should be cosine (other not implemented)')
-            print(lr_decay_step, '<< lr_decay_step dict', flush=True)  # TODO
+            print(lr_decay_step, '<< lr_decay_step dict', flush=True)
             config = lr_decay_step
             config['optimizer'] = optimizer
             config.pop('type')
@@ -232,20 +218,13 @@ def get_solver(args, dataloader):
         root = os.path.join(CONF.PATH.OUTPUT, stamp)
         os.makedirs(root, exist_ok=True)
 
-        #stamp = args.use_checkpoint
-        #root = os.path.join(CONF.PATH.OUTPUT, stamp)
-        #checkpoint = torch.load(os.path.join(CONF.PATH.OUTPUT, args.use_checkpoint, "checkpoint.tar"))
-        #model.load_state_dict(checkpoint["model_state_dict"],strict=False)
-        #optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         
         best_model_weights = torch.load(os.path.join(CONF.PATH.OUTPUT, args.use_checkpoint, "model_criteria_25.pth"), weights_only=False)
         comp_weight(model,best_model_weights)
-        #model.load_state_dict(best_model_weights, strict=False)
 
         if args.GF_path:
             print("\nloading group free weights...")
             detector_weights = torch.load(args.GF_path, weights_only=False)
-            #comp_weight(model.detector, detector_weights)
             model.detector.load_state_dict(detector_weights['model'], strict=True)
             
     else:
@@ -254,8 +233,6 @@ def get_solver(args, dataloader):
         root = os.path.join(CONF.PATH.OUTPUT, stamp)
         os.makedirs(root, exist_ok=True)
 
-
-    #print('LR&BN_DECAY', lr_decay_step, lr_decay_rate, bn_decay_step, bn_decay_rate, flush=True)
 
     solver = Solver(args=args,
         model=model,
@@ -368,9 +345,6 @@ def get_scanrefer(scanrefer_train, scanrefer_val, num_scenes, lang_num_max):
         scanrefer_val_new_scene = []
         scene_id = ""
         for data in scanrefer_val:
-            # if data["scene_id"] not in scanrefer_val_new:
-            # scanrefer_val_new[data["scene_id"]] = []
-            # scanrefer_val_new[data["scene_id"]].append(data)
             if scene_id != data["scene_id"]:
                 scene_id = data["scene_id"]
                 if len(scanrefer_val_new_scene) > 0:
@@ -382,14 +356,14 @@ def get_scanrefer(scanrefer_train, scanrefer_val, num_scenes, lang_num_max):
             scanrefer_val_new_scene.append(data)
         scanrefer_val_new.append(scanrefer_val_new_scene)
 
-    print("\nscanrefer_train_new", len(scanrefer_train_new), len(scanrefer_val_new), len(scanrefer_train_new[0]))  # 4819 1253 8
+    print("\nscanrefer_train_new", len(scanrefer_train_new), len(scanrefer_val_new), len(scanrefer_train_new[0]))
     sum = 0
     for i in range(len(scanrefer_train_new)):
         sum += len(scanrefer_train_new[i])
-    print("training sample numbers", sum)  # 36665
+    print("training sample numbers", sum)
     all_scene_list = train_scene_list + val_scene_list
 
-    print("train on {} samples and val on {} samples\n".format(len(new_scanrefer_train), len(new_scanrefer_val)))  # 36665 9508
+    print("train on {} samples and val on {} samples\n".format(len(new_scanrefer_train), len(new_scanrefer_val)))
 
     return new_scanrefer_train, new_scanrefer_val, all_scene_list, scanrefer_train_new, scanrefer_val_new
 
@@ -462,6 +436,7 @@ if __name__ == "__main__":
                         help="Batches each worker keeps ready in RAM. Ignored when "
                              "--num_workers 0.")
 
+
     parser.add_argument("--lang_input", type=str, default='glove+parse')
     parser.add_argument("--detector", type=str, default='GF', choices=["VN", "GF"])
     parser.add_argument("--GF_path", type=str)
@@ -469,11 +444,11 @@ if __name__ == "__main__":
     parser.add_argument("--match_lr", type=float, help="match module learning rate", default=0.0005)
     parser.add_argument("--detr_lr", type=float, help="match module learning rate", default=0.0001)
 
+    
     parser.add_argument('--width', default=1, type=int, help='backbone width')
     parser.add_argument('--num_target', type=int, default=256, help='Proposal number [default: 256]')
     parser.add_argument('--sampling', default='kps', type=str, help='Query points sampling method (kps, fps)')
 
-    # Transformer
     parser.add_argument('--nhead', default=8, type=int, help='multi-head number')
     parser.add_argument('--num_decoder_layers', default=6, type=int, help='number of decoder layers')
     parser.add_argument('--dim_feedforward', default=2048, type=int, help='dim_feedforward')
@@ -484,7 +459,6 @@ if __name__ == "__main__":
     parser.add_argument('--cross_position_embedding', default='xyz_learned', type=str,
                         help='position embedding in cross attention (none, xyz_learned)')
 
-    # Loss
     parser.add_argument('--query_points_generator_loss_coef', default=0.8, type=float)
     parser.add_argument('--obj_loss_coef', default=0.1, type=float, help='Loss weight for objectness loss')
     parser.add_argument('--box_loss_coef', default=1, type=float, help='Loss weight for box loss')
@@ -499,43 +473,30 @@ if __name__ == "__main__":
     parser.add_argument('--size_cls_agnostic', action='store_true', help='Use class-agnostic size prediction.')
 
 
-    # Training
     parser.add_argument('--start_epoch', type=int, default=1, help='Epoch to run [default: 1]')
-    #parser.add_argument('--max_epoch', type=int, default=400, help='Epoch to run [default: 180]')
     parser.add_argument('--optimizer', type=str, default='adamW', help='optimizer')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum for SGD')
     parser.add_argument('--weight_decay', type=float, default=0.0005, help='Optimization L2 weight decay [default: 0.0005]')
     parser.add_argument('--learning_rate', type=float, default=0.004, help='Initial learning rate for all except decoder [default: 0.004]')
     parser.add_argument('--decoder_learning_rate', type=float, default=0.0004, help='Initial learning rate for decoder [default: 0.0004]')
-    #parser.add_argument('--lr-scheduler', type=str, default='step', choices=["step", "cosine"], help="learning rate scheduler")
-    #parser.add_argument('--warmup-epoch', type=int, default=-1, help='warmup epoch')
-    #parser.add_argument('--warmup-multiplier', type=int, default=100, help='warmup multiplier')
-    #parser.add_argument('--lr_decay_epochs', type=int, default=[280, 340], nargs='+', help='for step scheduler. where to decay lr, can be a list')
-    #parser.add_argument('--lr_decay_rate', type=float, default=0.1, help='for step scheduler. decay rate for learning rate')
     parser.add_argument('--clip_norm', default=0.1, type=float,
                         help='gradient clipping max norm')
     parser.add_argument('--bn_momentum', type=float, default=0.1, help='Default bn momeuntum')
     parser.add_argument('--syncbn', action='store_true', help='whether to use sync bn')
 
-    # io
     parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
 
-    # others
     parser.add_argument('--ap_iou_thresholds', type=float, default=[0.25, 0.5], nargs='+', help='A list of AP IoU thresholds [default: 0.25,0.5]')
 
-    ablation_config.add_arguments(parser)  # ABLATION: optional CLI overrides
+    ablation_config.add_arguments(parser)
 
     args = parser.parse_args()
     args.detection = args.no_reference
 
-    # Defaults for a bare run with no flags. Only fills in values NOT passed on the CLI --
-    # a prior version applied these unconditionally after parsing, silently overriding any
-    # flags the caller gave. `_passed` checks sys.argv directly since argparse defaults
-    # can't distinguish an explicitly-passed default from an absent flag.
     def _passed(*flags):
         return any(a == f or a.startswith(f + "=") for a in sys.argv[1:] for f in flags)
 
-    APPLY_DEFAULTS = True          # set False to run on argparse defaults alone
+    APPLY_DEFAULTS = True
 
     if APPLY_DEFAULTS:
         if not _passed("--detector"):      args.detector = 'VN'
@@ -548,8 +509,6 @@ if __name__ == "__main__":
         if not _passed("--coslr"):         args.coslr = True
         if not _passed("--tag"):           args.tag = '3DVG-GF'
         if not _passed("--val_step"):      args.val_step = 5000
-        # 2024-12-18 run is the only checkpoint present in outputs/; --use_pretrained is
-        # ignored under the frozen-detector protocol, so fusion weights load via --use_checkpoint.
         if not _passed("--use_checkpoint", "--no_warm_start"):
             args.use_checkpoint = '2024-12-18_20-40-38_3DVG-FIXED'
         if not _passed("--use_pretrained"):
@@ -558,14 +517,13 @@ if __name__ == "__main__":
     if getattr(args, "no_warm_start", False):
         args.use_checkpoint = ""
 
-    args = ablation_config.apply(args)          # ABLATION: fold in flags, then report them
+    args = ablation_config.apply(args)
     print("\n" + ablation_config.describe() + "\n")
 
     os.environ['KMP_DUPLICATE_LIB_OK']='True'
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
-    # reproducibility
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False

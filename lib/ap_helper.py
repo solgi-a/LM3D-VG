@@ -1,6 +1,3 @@
-""" Average Precision helpers for 3D object detection.
-Modified from: https://github.com/facebookresearch/votenet/blob/master/models/ap_helper.py
-"""
 import os
 import sys
 import numpy as np
@@ -13,15 +10,14 @@ from utils.box_util import get_3d_box
 from data.scannet.model_util_scannet import extract_pc_in_box3d
 
 def flip_axis_to_camera(pc):
-    ''' Flip X-right,Y-forward,Z-up to X-right,Y-down,Z-forward. (N,3) array. '''
     pc2 = np.copy(pc)
-    pc2[...,[0,1,2]] = pc2[...,[0,2,1]] # cam X,Y,Z = depth X,-Z,Y
+    pc2[...,[0,1,2]] = pc2[...,[0,2,1]]
     pc2[...,1] *= -1
     return pc2
 
 def flip_axis_to_depth(pc):
     pc2 = np.copy(pc)
-    pc2[...,[0,1,2]] = pc2[...,[0,2,1]] # depth X,Y,Z = cam X,Z,-Y
+    pc2[...,[0,1,2]] = pc2[...,[0,2,1]]
     pc2[...,2] *= -1
     return pc2
 
@@ -32,25 +28,20 @@ def softmax(x):
     return probs
 
 def parse_predictions(end_points, config_dict):
-    """ Parse predictions to OBB parameters and NMS-suppress overlapping boxes.
-
-    Returns batch_pred_map_cls: per-sample list of (pred_sem_cls, box_params, box_score) tuples.
-    """
-    pred_center = end_points['center'] # B,num_proposal,3
-    pred_heading_class = torch.argmax(end_points['heading_scores'], -1) # B,num_proposal
+    pred_center = end_points['center']
+    pred_heading_class = torch.argmax(end_points['heading_scores'], -1)
     pred_heading_residual = torch.gather(end_points['heading_residuals'], 2,
-        pred_heading_class.unsqueeze(-1)) # B,num_proposal,1
+        pred_heading_class.unsqueeze(-1))
     pred_heading_residual.squeeze_(2)
-    pred_size_class = torch.argmax(end_points['size_scores'], -1) # B,num_proposal
+    pred_size_class = torch.argmax(end_points['size_scores'], -1)
     pred_size_residual = torch.gather(end_points['size_residuals'], 2,
-        pred_size_class.unsqueeze(-1).unsqueeze(-1).repeat(1,1,1,3)) # B,num_proposal,1,3
+        pred_size_class.unsqueeze(-1).unsqueeze(-1).repeat(1,1,1,3))
     pred_size_residual.squeeze_(2)
-    pred_sem_cls = torch.argmax(end_points['sem_cls_scores'], -1) # B,num_proposal
-    sem_cls_probs = softmax(end_points['sem_cls_scores'].detach().cpu().numpy()) # B,num_proposal,10
-    pred_sem_cls_prob = np.max(sem_cls_probs,-1) # B,num_proposal
+    pred_sem_cls = torch.argmax(end_points['sem_cls_scores'], -1)
+    sem_cls_probs = softmax(end_points['sem_cls_scores'].detach().cpu().numpy())
+    pred_sem_cls_prob = np.max(sem_cls_probs,-1)
 
-    num_proposal = pred_center.shape[1]
-    # points are in upright_depth coord but util functions assume upright_camera coord
+    num_proposal = pred_center.shape[1] 
     bsize = pred_center.shape[0]
     pred_corners_3d_upright_camera = np.zeros((bsize, num_proposal, 8, 3))
     pred_center_upright_camera = flip_axis_to_camera(pred_center.detach().cpu().numpy())
@@ -63,15 +54,15 @@ def parse_predictions(end_points, config_dict):
             corners_3d_upright_camera = get_3d_box(box_size, heading_angle, pred_center_upright_camera[i,j,:])
             pred_corners_3d_upright_camera[i,j] = corners_3d_upright_camera
 
-    K = pred_center.shape[1] # K==num_proposal
+    K = pred_center.shape[1]
     nonempty_box_mask = np.ones((bsize, K))
 
     if config_dict['remove_empty_box']:
-        batch_pc = end_points['point_clouds'].cpu().numpy()[:,:,0:3] # B,N,3
+        batch_pc = end_points['point_clouds'].cpu().numpy()[:,:,0:3]
         for i in range(bsize):
-            pc = batch_pc[i,:,:] # (N,3)
+            pc = batch_pc[i,:,:]
             for j in range(K):
-                box3d = pred_corners_3d_upright_camera[i,j,:,:] # (8,3)
+                box3d = pred_corners_3d_upright_camera[i,j,:,:]
                 box3d = flip_axis_to_depth(box3d)
                 pc_in_box,inds = extract_pc_in_box3d(pc, box3d)
                 if len(pc_in_box) < 5:
@@ -80,7 +71,7 @@ def parse_predictions(end_points, config_dict):
     obj_logits = end_points['objectness_scores'].detach().cpu().numpy()
     obj_prob = softmax(obj_logits)
     if obj_prob.shape[-1] == 2:
-        obj_prob = obj_prob[:,:,1] # (B,K)
+        obj_prob = obj_prob[:,:,1]
     else:
         obj_prob = obj_prob[:,:,0]
         
@@ -130,7 +121,7 @@ def parse_predictions(end_points, config_dict):
                 boxes_3d_with_prob[j,4] = np.max(pred_corners_3d_upright_camera[i,j,:,1])
                 boxes_3d_with_prob[j,5] = np.max(pred_corners_3d_upright_camera[i,j,:,2])
                 boxes_3d_with_prob[j,6] = obj_prob[i,j]
-                boxes_3d_with_prob[j,7] = pred_sem_cls[i,j] # only suppress if same class
+                boxes_3d_with_prob[j,7] = pred_sem_cls[i,j]
             nonempty_box_inds = np.where(nonempty_box_mask[i,:]==1)[0]
             pick = nms_3d_faster_samecls(boxes_3d_with_prob[nonempty_box_mask[i,:]==1,:],
                 config_dict['nms_iou'], config_dict['use_old_type_nms'])
@@ -138,7 +129,7 @@ def parse_predictions(end_points, config_dict):
             pred_mask[i, nonempty_box_inds[pick]] = 1
         end_points['pred_mask'] = pred_mask
 
-    batch_pred_map_cls = [] # list of len batch_size; each entry: list of (pred_cls, pred_box, conf) tuples
+    batch_pred_map_cls = []
     for i in range(bsize):
         if config_dict['per_class_proposal']:
             cur_list = []
@@ -154,10 +145,6 @@ def parse_predictions(end_points, config_dict):
     return batch_pred_map_cls
 
 def parse_groundtruths(end_points, config_dict):
-    """ Parse groundtruth labels to OBB parameters.
-
-    Returns batch_gt_map_cls: per-sample list of (gt_sem_cls, gt_box_params) tuples.
-    """
     center_label = end_points['center_label']
     heading_class_label = end_points['heading_class_label']
     heading_residual_label = end_points['heading_residual_label']
@@ -167,7 +154,7 @@ def parse_groundtruths(end_points, config_dict):
     sem_cls_label = end_points['sem_cls_label']
     bsize = center_label.shape[0]
 
-    K2 = center_label.shape[1] # K2==MAX_NUM_OBJ
+    K2 = center_label.shape[1]
     gt_corners_3d_upright_camera = np.zeros((bsize, K2, 8, 3))
     gt_center_upright_camera = flip_axis_to_camera(center_label[:,:,0:3].detach().cpu().numpy())
     for i in range(bsize):
@@ -187,14 +174,12 @@ def parse_groundtruths(end_points, config_dict):
 
 class APCalculator(object):
     def __init__(self, ap_iou_thresh=0.25, class2type_map=None):
-        """ ap_iou_thresh: IoU threshold for a positive prediction. class2type_map: optional {class_int: class_name}. """
         self.ap_iou_thresh = ap_iou_thresh
         self.class2type_map = class2type_map
         self.reset()
         
     def step(self, batch_pred_map_cls, batch_gt_map_cls):
-        """ Accumulate one batch of predictions and groundtruths. """
-
+        
         bsize = len(batch_pred_map_cls)
         assert(bsize == len(batch_gt_map_cls))
         for i in range(bsize):
@@ -203,7 +188,6 @@ class APCalculator(object):
             self.scan_cnt += 1
     
     def compute_metrics(self):
-        """ Compute Average Precision from accumulated predictions and groundtruths. """
         rec, prec, ap = eval_det_multiprocessing(self.pred_map_cls, self.gt_map_cls, ovthresh=self.ap_iou_thresh, get_iou_func=get_iou_obb)
         ret_dict = {} 
         for key in sorted(ap.keys()):
@@ -223,6 +207,6 @@ class APCalculator(object):
         return ret_dict
 
     def reset(self):
-        self.gt_map_cls = {} # {scan_id: [(classname, bbox)]}
-        self.pred_map_cls = {} # {scan_id: [(classname, bbox, score)]}
+        self.gt_map_cls = {}
+        self.pred_map_cls = {}
         self.scan_cnt = 0

@@ -25,9 +25,6 @@ def sinusoid_encoding_table(max_len, d_model, padding_idx=None):
 
 
 class PositionWiseFeedForward(nn.Module):
-    '''
-    Position-wise feed forward layer
-    '''
 
     def __init__(self, d_model=512, d_ff=2048, dropout=.1, identity_map_reordering=False):
         super(PositionWiseFeedForward, self).__init__()

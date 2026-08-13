@@ -15,33 +15,31 @@ from tqdm import tqdm
 from shutil import copyfile
 from plyfile import PlyData, PlyElement
 
-sys.path.append(os.path.join(os.getcwd())) # HACK add the root folder
+sys.path.append(os.path.join(os.getcwd()))
 
 from utils.pc_utils import write_ply_rgb, write_oriented_bbox
 from utils.box_util import get_3d_box, box3d_iou
 from models.refnet import RefNet
 from data.scannet.model_util_scannet import ScannetDatasetConfig
 from lib.dataset import ScannetReferenceDataset
-from experiments.ablation import ablation_config, ablation_hooks  # ABLATION: revision experiments
+from experiments.ablation import ablation_config, ablation_hooks
 
 from lib.ap_helper import APCalculator, parse_predictions, parse_groundtruths
 from lib.loss_helper import get_loss
 from lib.eval_helper import get_eval
 from lib.config import CONF
 
-# data
-SCANNET_ROOT = CONF.PATH.SCANNET_SCANS # TODO point this to your scannet data
-SCANNET_MESH = os.path.join(SCANNET_ROOT, "{}/{}_vh_clean_2.ply") # scene_id, scene_id 
-SCANNET_META = os.path.join(SCANNET_ROOT, "{}/{}.txt") # scene_id, scene_id 
+SCANNET_ROOT = CONF.PATH.SCANNET_SCANS
+SCANNET_MESH = os.path.join(SCANNET_ROOT, "{}/{}_vh_clean_2.ply")
+SCANNET_META = os.path.join(SCANNET_ROOT, "{}/{}.txt")
 SCANREFER_TRAIN = json.load(open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_train.json")))
 SCANREFER_VAL = json.load(open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_val.json")))
 
-# constants
 MEAN_COLOR_RGB = np.array([109.8, 97.2, 83.8])
 DC = ScannetDatasetConfig()
 
 def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config, augment):
-    dataset = ablation_hooks.build_dataset(  # ABLATION: was ScannetReferenceDataset(
+    dataset = ablation_hooks.build_dataset(
         args = args,
         scanrefer=scanrefer, 
         scanrefer_new=scanrefer_new,
@@ -60,9 +58,8 @@ def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config
     return dataset, dataloader
 
 def get_model(args):
-    # load model
     input_channels = int(args.use_multiview) * 128 + int(args.use_normal) * 3 + int(args.use_color) * 3 + int(not args.no_height)
-    model = ablation_hooks.build_model(  # ABLATION: was RefNet(
+    model = ablation_hooks.build_model(
         args=args,
         num_class=DC.num_class,
         num_heading_bin=DC.num_heading_bin,
@@ -143,11 +140,6 @@ def write_ply(verts, colors, indices, output_file):
     file.close()
 
 def write_bbox(corners, mode, output_file):
-    """
-    bbox: (cx, cy, cz, lx, ly, lz, r), center and length in three axis, the last is the rotation
-    output_file: string
-
-    """
     def create_cylinder_mesh(radius, p0, p1, stacks=10, slices=10):
         
         import math
@@ -259,7 +251,7 @@ def write_bbox(corners, mode, output_file):
         corners.append(np.array([xmax, ymin, zmin]).reshape(1, 3))
         corners.append(np.array([xmin, ymin, zmin]).reshape(1, 3))
         corners.append(np.array([xmin, ymin, zmax]).reshape(1, 3))
-        corners = np.concatenate(corners, axis=0) # 8 x 3
+        corners = np.concatenate(corners, axis=0)
 
         return corners
 
@@ -272,8 +264,8 @@ def write_bbox(corners, mode, output_file):
     box_min = np.min(corners, axis=0)
     box_max = np.max(corners, axis=0)
     palette = {
-        0: [0, 255, 0], # gt
-        1: [0, 0, 255]  # pred
+        0: [0, 255, 0],
+        1: [0, 0, 255]
     }
     chosen_color = palette[mode]
     edges = get_bbox_edges(box_min, box_max)
@@ -290,8 +282,6 @@ def write_bbox(corners, mode, output_file):
     write_ply(verts, colors, indices, output_file)
 
 def read_mesh(filename):
-    """ read XYZ for each vertex.
-    """
 
     assert os.path.isfile(filename)
     with open(filename, 'rb') as f:
@@ -344,7 +334,6 @@ def align_mesh(scene_id):
             axis_align_matrix = np.array([float(x) for x in line.rstrip().strip('axisAlignment = ').split(' ')]).reshape((4, 4))
             break
     
-    # align
     pts = np.ones((vertices.shape[0], 4))
     pts[:, :3] = vertices[:, :3]
     pts = np.dot(pts, axis_align_matrix.T)
@@ -358,7 +347,6 @@ def dump_results(args, scanrefer, data, config):
     dump_dir = os.path.join(CONF.PATH.OUTPUT, args.folder, "vis")
     os.makedirs(dump_dir, exist_ok=True)
 
-    # from inputs
     ids = data['scan_idx'].detach().cpu().numpy()
     point_clouds = data['point_clouds'].cpu().numpy()
     batch_size = point_clouds.shape[0]
@@ -372,49 +360,40 @@ def dump_results(args, scanrefer, data, config):
     ious = data["ref_iou"]
 
     for i in range(batch_size):
-        # basic info
         idx = ids[i]
         scene_id = scanrefer[idx]["scene_id"]
         object_id = scanrefer[idx]["object_id"]
         object_name = scanrefer[idx]["object_name"]
         ann_id = scanrefer[idx]["ann_id"]
     
-        # scene_output
         scene_dump_dir = os.path.join(dump_dir, scene_id)
         if not os.path.exists(scene_dump_dir):
             os.mkdir(scene_dump_dir)
 
-            # dump the original scene point clouds
             mesh = align_mesh(scene_id)
             mesh.write(os.path.join(scene_dump_dir, 'mesh.ply'))
 
             write_ply_rgb(point_clouds[i], pcl_color[i], os.path.join(scene_dump_dir, 'pc.ply'))
 
-        # for each object there should be only one gt reference box
         object_dump_dir = os.path.join(dump_dir, scene_id, "gt_{}_{}.ply".format(object_id, object_name))
         gt_bbox = gt_bboxes[i]
         if not os.path.exists(object_dump_dir):
             write_bbox(gt_bbox, 0, os.path.join(scene_dump_dir, 'gt_{}_{}.ply'.format(object_id, object_name)))
             np.save(os.path.join(scene_dump_dir, 'gt_{}_{}.npy'.format(object_id, object_name)), gt_bbox)
 
-        # visualize the predicted reference box
         pred_bbox = pred_bboxes[i]
         iou = ious[i]
         write_bbox(pred_bbox, 1, os.path.join(scene_dump_dir, 'pred_{}_{}_{}_{:.5f}.ply'.format(object_id, object_name, ann_id, iou)))
         np.save(os.path.join(scene_dump_dir, 'pred_{}_{}_{}_{:.5f}.npy'.format(object_id, object_name, ann_id, iou)), pred_bbox)
 
 def visualize(args):
-    # init training dataset
     print("preparing data...")
     scanrefer, scene_list, scanrefer_new = get_scanrefer(args)
 
-    # dataloader
     _, dataloader = get_dataloader(args, scanrefer, scanrefer_new, scene_list, "val", DC, False)
 
-    # model
     model = get_model(args)
 
-    # config
     POST_DICT = {
         'remove_empty_box': True, 
         'use_3d_nms': True, 
@@ -426,13 +405,11 @@ def visualize(args):
         'dataset_config': DC
     } if not args.no_nms else None
     
-    # evaluate
     print("visualizing...")
     for data in tqdm(dataloader):
         for key in data:
             data[key] = data[key].cuda()
 
-        # feed
         data = model(data)
         _, data = get_loss(args, data, DC, True, True, True)
         data = get_eval(
@@ -442,7 +419,6 @@ def visualize(args):
             use_lang_classifier=True,
             post_processing=POST_DICT
         )
-        # visualize
         dump_results(args, scanrefer, data, DC)
 
     print("done!")
@@ -478,7 +454,6 @@ if __name__ == "__main__":
     parser.add_argument('--num_target', type=int, default=256, help='Proposal number [default: 256]')
     parser.add_argument('--sampling', default='kps', type=str, help='Query points sampling method (kps, fps)')
 
-    # Transformer
     parser.add_argument('--nhead', default=8, type=int, help='multi-head number')
     parser.add_argument('--num_decoder_layers', default=6, type=int, help='number of decoder layers')
     parser.add_argument('--dim_feedforward', default=2048, type=int, help='dim_feedforward')
@@ -489,7 +464,6 @@ if __name__ == "__main__":
     parser.add_argument('--cross_position_embedding', default='xyz_learned', type=str,
                         help='position embedding in cross attention (none, xyz_learned)')
 
-    # Loss
     parser.add_argument('--query_points_generator_loss_coef', default=0.8, type=float)
     parser.add_argument('--obj_loss_coef', default=0.1, type=float, help='Loss weight for objectness loss')
     parser.add_argument('--box_loss_coef', default=1, type=float, help='Loss weight for box loss')
@@ -504,7 +478,6 @@ if __name__ == "__main__":
     parser.add_argument('--size_cls_agnostic', action='store_true', help='Use class-agnostic size prediction.')
 
 
-    # Training
     parser.add_argument('--start_epoch', type=int, default=1, help='Epoch to run [default: 1]')
     parser.add_argument('--optimizer', type=str, default='adamW', help='optimizer')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum for SGD')
@@ -516,19 +489,16 @@ if __name__ == "__main__":
     parser.add_argument('--bn_momentum', type=float, default=0.1, help='Default bn momeuntum')
     parser.add_argument('--syncbn', action='store_true', help='whether to use sync bn')
 
-    # io
     parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
 
-    # others
     parser.add_argument('--ap_iou_thresholds', type=float, default=[0.25, 0.5], nargs='+', help='A list of AP IoU thresholds [default: 0.25,0.5]')
 
-    ablation_config.add_arguments(parser)  # ABLATION: optional CLI overrides
+    ablation_config.add_arguments(parser)
 
-    args = ablation_config.apply(parser.parse_args())  # ABLATION: fold in flags
-    print("\n" + ablation_config.describe() + "\n")    # ABLATION
+    args = ablation_config.apply(parser.parse_args())
+    print("\n" + ablation_config.describe() + "\n")
 
     os.environ['KMP_DUPLICATE_LIB_OK']='True'
-    # setting
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 

@@ -38,8 +38,7 @@ class LangModule(nn.Module):
 
     def _lang_model_forward(self, word_embs, lang_len):
 
-        lang_feat = pack_padded_sequence(word_embs, lang_len.cpu(), batch_first=True, enforce_sorted=False)  # Note: For high-version cuda: .cpu()
-        #lang_feat = pack_padded_sequence(word_embs, lang_len, batch_first=True, enforce_sorted=False)
+        lang_feat = pack_padded_sequence(word_embs, lang_len.cpu(), batch_first=True, enforce_sorted=False)
 
         out, lang_last = self.gru(lang_feat)
 
@@ -52,14 +51,15 @@ class LangModule(nn.Module):
         mask_queries = torch.ones((b_s, seq_len), dtype=torch.int)
         for i in range(b_s):
             mask_queries[i, cap_len[i]:] = 0
-        attention_mask = (mask_queries == 0).unsqueeze(1).unsqueeze(1).cuda()  # (b_s, 1, 1, seq_len)
+        attention_mask = (mask_queries == 0).unsqueeze(1).unsqueeze(1).cuda()
                 
-        lang_last = lang_last.permute(1, 0, 2).contiguous().flatten(start_dim=1)  # batch_size, hidden_size * num_dir
+        lang_last = lang_last.permute(1, 0, 2).contiguous().flatten(start_dim=1)
 
         return cap_emb, lang_last, attention_mask
 
     def forward(self, data_dict):
-        word_embs = data_dict["lang_feat_list"]  # B * 32 * MAX_DES_LEN * LEN(300)
+        
+        word_embs = data_dict["lang_feat_list"]
         lang_len = data_dict["lang_len_list"]
         batch_size, len_nun_max, max_des_len = word_embs.shape[:3]
 
@@ -68,11 +68,11 @@ class LangModule(nn.Module):
         first_obj = data_dict["first_obj_list"].reshape(batch_size * len_nun_max)
 
 
-        target = data_dict['target']  # B * 32 * MAX_DES_LEN * LEN(300)
+        target = data_dict['target']
         tgt_len = data_dict["tgt_len"]
-        adjectives = data_dict['adjectives']  # B * 32 * MAX_DES_LEN * LEN(300)
+        adjectives = data_dict['adjectives']
         adj_len = data_dict["adj_len"]
-        neighbors = data_dict['neighbors']  # B * 32 * MAX_DES_LEN * LEN(300)
+        neighbors = data_dict['neighbors']
         ngh_len = data_dict["ngh_len"]
 
         target = target.reshape(batch_size * len_nun_max, target.shape[2], -1)
@@ -123,6 +123,7 @@ class LangModule(nn.Module):
                 """ for j in range(int(sen_len/5)):
                     
                     num = random.randint(0, sen_len-1)
+                    #########################################################################
                     masked_word = word_embs[i, num].unsqueeze(0)
 
                     comparison = (adjectives[i] == masked_word)
@@ -138,6 +139,7 @@ class LangModule(nn.Module):
 
                     #num_ngh_match = (neighbors[i] == masked_word).sum(1)/300 == 1
                     #neighbors[i][num_ngh_match] = data_dict["unk"][0]
+                    #########################################################################
                     word_embs[i, num] = data_dict["unk"][0] """
 
         """ elif data_dict["istrain"][0] == 1:
@@ -149,6 +151,7 @@ class LangModule(nn.Module):
 
                     num = random.randint(0, sen_len-1)
 
+                    #########################################################################
                     masked_word = word_embs[i, num].unsqueeze(0)
 
                     comparison = (adjectives[i] == masked_word)
@@ -164,6 +167,7 @@ class LangModule(nn.Module):
 
                     #num_ngh_match = (neighbors[i] == masked_word).sum(1)/300 == 1
                     #neighbors[i][num_ngh_match] = data_dict["unk"][0]
+                    #########################################################################
                     
                     word_embs[i, num] = data_dict["unk"][0] """
 
@@ -187,7 +191,7 @@ class LangModule(nn.Module):
         lang_fea = self.mhatt(lang_fea, lang_fea, lang_fea, attention_mask)
 
         data_dict["lang_fea"] = lang_fea
-        data_dict["lang_emb"] = lang_last  # B, hidden_size
+        data_dict["lang_emb"] = lang_last
 
 
         tgt_cap_emb, _, tgt_attention_mask = self._lang_model_forward(target, tgt_len)

@@ -1,7 +1,3 @@
-'''
-File Created: Monday, 25th November 2019 1:35:30 pm
-Author: Dave Zhenyu Chen (zhenyu.chen@tum.de)
-'''
 
 import os
 import sys
@@ -17,8 +13,8 @@ from lib.eval_helper import get_eval
 from utils.eta import decode_eta
 try:
     from pointnet2_ops.pt_utils import BNMomentumScheduler
-except ImportError: 
-    from pointnet2_python.pt_utils import BNMomentumScheduler
+except ImportError:
+    from pointnet.pointnet2_python.pt_utils import BNMomentumScheduler
 import json
 
 ITER_REPORT_TEMPLATE = """
@@ -100,8 +96,8 @@ class Solver():
     detection=True, reference=True, use_lang_classifier=True,
     lr_decay_step=None, lr_decay_rate=None, bn_decay_step=None, bn_decay_rate=None, lr_scheduler=None):
 
-        self.epoch = 0                    # set in __call__
-        self.verbose = 0                  # set in __call__
+        self.epoch = 0
+        self.verbose = 0
 
         self.model = model
         self.config = config
@@ -162,7 +158,7 @@ class Solver():
 
         self._running_log = {}
         self._global_iter_id = 0
-        self._total_iter = {}             # set in __call__
+        self._total_iter = {}
 
         self.__iter_report_template = ITER_REPORT_TEMPLATE
         self.__epoch_report_template = EPOCH_REPORT_TEMPLATE
@@ -306,6 +302,7 @@ class Solver():
 
     def _feed(self, dataloader, phase, epoch_id):
         self._set_phase(phase)
+
         self._reset_log(phase)
 
         dataloader = tqdm(dataloader)
@@ -344,7 +341,7 @@ class Solver():
                 start = time.time()
                 self._backward()
                 self.log[phase]["backward"].append(time.time() - start)
-
+            
             start = time.time()
             self._eval(data_dict)
             self.log[phase]["eval"].append(time.time() - start)
@@ -398,10 +395,11 @@ class Solver():
 
 
         if phase == "val":
-
+            
             ious = self.log[phase]["ref_iou"]
             cur_criterion = "iou_rate_0.5"
             cur_criterion_25 = "iou_rate_0.25"
+
 
             cur_best_25 = np.array(ious)[np.array(ious) >= 0.25].shape[0] / np.array(ious).shape[0]
             cur_best = np.array(ious)[np.array(ious) >= 0.5].shape[0] / np.array(ious).shape[0]
@@ -429,6 +427,7 @@ class Solver():
                 self.best["obj_acc"] = np.mean(self.log[phase]["obj_acc"])
                 self.best["pos_ratio"] = np.mean(self.log[phase]["pos_ratio"])
                 self.best["neg_ratio"] = np.mean(self.log[phase]["neg_ratio"])
+
 
                 self.best["iou_rate_0.25"] = np.array(ious)[np.array(ious) >= 0.25].shape[0] / np.array(ious).shape[0]
                 self.best["iou_rate_0.5"] = np.array(ious)[np.array(ious) >= 0.5].shape[0] / np.array(ious).shape[0]
@@ -531,7 +530,9 @@ class Solver():
             train_obj_acc=round(np.mean([v for v in self.log["train"]["obj_acc"]]), 5),
             train_pos_ratio=round(np.mean([v for v in self.log["train"]["pos_ratio"]]), 5),
             train_neg_ratio=round(np.mean([v for v in self.log["train"]["neg_ratio"]]), 5),
-
+            
+            
+            
             train_iou_rate_25 = round((np.array(ious)[np.array(ious) >= 0.25].shape[0] / np.array(ious).shape[0]),5),
             train_iou_rate_5 = round((np.array(ious)[np.array(ious) >= 0.5].shape[0] / np.array(ious).shape[0]),5),
 
@@ -581,7 +582,8 @@ class Solver():
             train_obj_acc=round(np.mean([v for v in self.log["train"]["obj_acc"]]), 5),
             train_pos_ratio=round(np.mean([v for v in self.log["train"]["pos_ratio"]]), 5),
             train_neg_ratio=round(np.mean([v for v in self.log["train"]["neg_ratio"]]), 5),
-
+            
+            
             train_iou_rate_25 = round((np.array(train_ious)[np.array(train_ious) >= 0.25].shape[0] / np.array(train_ious).shape[0]),5),
             train_iou_rate_5 = round((np.array(train_ious)[np.array(train_ious) >= 0.5].shape[0] / np.array(train_ious).shape[0]),5),
 
@@ -599,7 +601,8 @@ class Solver():
             val_obj_acc=round(np.mean([v for v in self.log["val"]["obj_acc"]]), 5),
             val_pos_ratio=round(np.mean([v for v in self.log["val"]["pos_ratio"]]), 5),
             val_neg_ratio=round(np.mean([v for v in self.log["val"]["neg_ratio"]]), 5),
-
+            
+            
             val_iou_rate_25 = round((np.array(val_ious)[np.array(val_ious) >= 0.25].shape[0] / np.array(val_ious).shape[0]),5),
             val_iou_rate_5 = round((np.array(val_ious)[np.array(val_ious) >= 0.5].shape[0] / np.array(val_ious).shape[0]),5),
 

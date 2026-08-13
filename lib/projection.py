@@ -15,7 +15,6 @@ class ProjectionHelper():
         self._compute_corner_points()
 
     def depth_to_skeleton(self, ux, uy, depth):
-        # 2D to 3D coordinates with depth
         x = (ux - self.intrinsic[0][2]) / self.intrinsic[0][0]
         y = (uy - self.intrinsic[1][2]) / self.intrinsic[1][1]
         return torch.Tensor([depth*x, depth*y, depth])
@@ -31,13 +30,10 @@ class ProjectionHelper():
         else:
             corner_points = torch.ones(8, 4)
         
-        # image to camera
-        # depth min
         corner_points[0][:3] = self.depth_to_skeleton(0, 0, self.depth_min)
         corner_points[1][:3] = self.depth_to_skeleton(self.image_dims[0] - 1, 0, self.depth_min)
         corner_points[2][:3] = self.depth_to_skeleton(self.image_dims[0] - 1, self.image_dims[1] - 1, self.depth_min)
         corner_points[3][:3] = self.depth_to_skeleton(0, self.image_dims[1] - 1, self.depth_min)
-        # depth max
         corner_points[4][:3] = self.depth_to_skeleton(0, 0, self.depth_max)
         corner_points[5][:3] = self.depth_to_skeleton(self.image_dims[0] - 1, 0, self.depth_max)
         corner_points[6][:3] = self.depth_to_skeleton(self.image_dims[0] - 1, self.image_dims[1] - 1, self.depth_max)
@@ -46,52 +42,36 @@ class ProjectionHelper():
         self.corner_points = corner_points
 
     def compute_frustum_corners(self, camera_to_world):
-        """
-        Coordinates of the viewing frustum corners for one camera.
 
-        :param camera_to_world: torch tensor of shape (4, 4)
-        :return: corner_coords: torch tensor of shape (8, 4)
-        """
+
         corner_coords = torch.bmm(camera_to_world.repeat(8, 1, 1), self.corner_points.unsqueeze(2))
 
         return corner_coords
 
     def compute_frustum_normals(self, corner_coords):
-        """
-        Inward-pointing normal vectors to the 6 frustum planes.
-
-        :param corner_coords: torch tensor of shape (8, 4)
-        :return: normals: torch tensor of shape (6, 3)
-        """
 
         normals = corner_coords.new(6, 3)
 
-        # front plane
         plane_vec1 = corner_coords[3][:3] - corner_coords[0][:3]
         plane_vec2 = corner_coords[1][:3] - corner_coords[0][:3]
         normals[0] = torch.cross(plane_vec1.view(-1), plane_vec2.view(-1))
 
-        # right side plane
         plane_vec1 = corner_coords[2][:3] - corner_coords[1][:3]
         plane_vec2 = corner_coords[5][:3] - corner_coords[1][:3]
         normals[1] = torch.cross(plane_vec1.view(-1), plane_vec2.view(-1))
 
-        # roof plane
         plane_vec1 = corner_coords[3][:3] - corner_coords[2][:3]
         plane_vec2 = corner_coords[6][:3] - corner_coords[2][:3]
         normals[2] = torch.cross(plane_vec1.view(-1), plane_vec2.view(-1))
 
-        # left side plane
         plane_vec1 = corner_coords[0][:3] - corner_coords[3][:3]
         plane_vec2 = corner_coords[7][:3] - corner_coords[3][:3]
         normals[3] = torch.cross(plane_vec1.view(-1), plane_vec2.view(-1))
 
-        # bottom plane
         plane_vec1 = corner_coords[1][:3] - corner_coords[0][:3]
         plane_vec2 = corner_coords[4][:3] - corner_coords[0][:3]
         normals[4] = torch.cross(plane_vec1.view(-1), plane_vec2.view(-1))
 
-        # back plane
         plane_vec1 = corner_coords[6][:3] - corner_coords[5][:3]
         plane_vec2 = corner_coords[4][:3] - corner_coords[5][:3]
         normals[5] = torch.cross(plane_vec1.view(-1), plane_vec2.view(-1))
@@ -99,16 +79,10 @@ class ProjectionHelper():
         return normals
 
     def points_in_frustum(self, corner_coords, normals, new_pts, return_mask=False):
-        """
-        Checks whether new_pts lie in the frustum defined by corner_coords.
-
-        :param return_mask: if False, returns the count of points in the frustum instead of the mask
-        """
 
         point_to_plane1 = (new_pts.cuda() - corner_coords[2][:3].view(-1))
         point_to_plane2 = (new_pts.cuda() - corner_coords[4][:3].view(-1))
 
-        # mask per plane: point lies on the inside if its projection onto the normal is negative
         masks = list()
         for k, normal in enumerate(normals):
             if k < 3:
@@ -118,7 +92,6 @@ class ProjectionHelper():
         mask = torch.ones(point_to_plane1.shape[0]) > 0
         mask = mask.cuda()
 
-        # combine: keep points inside all 6 planes
         for addMask in masks:
             mask = mask * addMask.squeeze()
 
@@ -128,9 +101,6 @@ class ProjectionHelper():
             return torch.sum(mask)
             
     def points_in_frustum_cpu(self, corner_coords, normals, new_pts, return_mask=False):
-        """
-        CPU variant of points_in_frustum.
-        """
 
         point_to_plane1 = (new_pts - corner_coords[2][:3].view(-1))
         point_to_plane2 = (new_pts - corner_coords[4][:3].view(-1))
@@ -152,15 +122,6 @@ class ProjectionHelper():
             return torch.sum(mask)
 
     def compute_projection(self, points, depth, camera_to_world):
-        """
-        Computes correspondences of points to pixels.
-
-        :param points: tensor containing all points of the point cloud (num_points, 3)
-        :param depth: depth map (size: proj_image)
-        :param camera_to_world: camera pose (4, 4)
-        :return: indices_3d (point indices that correspond to a pixel),
-                indices_2d (pixel indices that correspond to a point)
-        """
 
         num_points = points.shape[0]
         world_to_camera = torch.inverse(camera_to_world)
@@ -193,7 +154,6 @@ class ProjectionHelper():
         valid_image_ind_y = image[1][valid_ind_mask]
         valid_image_ind = valid_image_ind_y * self.image_dims[0] + valid_image_ind_x
 
-        # depth must be within range and within `accuracy` of the projected point's own depth
         depth_vals = torch.index_select(depth.view(-1), 0, valid_image_ind.cuda())
         depth_mask = depth_vals.ge(self.depth_min) * depth_vals.le(self.depth_max) * torch.abs(depth_vals - camera[2][valid_ind_mask]).le(self.accuracy)
         if not depth_mask.any():
@@ -201,7 +161,6 @@ class ProjectionHelper():
 
         ind_update = ind_points[valid_ind_mask]
         ind_update = ind_update[depth_mask]
-        # padded to a fixed size (num_points+1) for batching; slot 0 holds the valid count
         indices_3d = ind_update.new(num_points + 1).fill_(0)
         indices_2d = ind_update.new(num_points + 1).fill_(0)
         indices_3d[0] = ind_update.shape[0]
@@ -213,18 +172,15 @@ class ProjectionHelper():
 
     @torch.no_grad()
     def project(self, label, lin_indices_3d, lin_indices_2d, num_points):
-        """
-        Backprojects 2D features onto 3D points using precomputed correspondences.
-        """
-
-        num_label_ft = 1 if len(label.shape) == 2 else label.shape[0] # = num_input_channels
+        
+        num_label_ft = 1 if len(label.shape) == 2 else label.shape[0]
 
         output = label.new(num_label_ft, num_points).fill_(0)
         num_ind = lin_indices_3d[0]
         if num_ind > 0:
             vals = torch.index_select(label.view(num_label_ft, -1), 1, lin_indices_2d[1:1+num_ind])
             output.view(num_label_ft, -1)[:, lin_indices_3d[1:1+num_ind]] = vals
-
+        
         return output
 
 
@@ -232,10 +188,7 @@ class Projection(Function):
 
     @staticmethod
     def forward(ctx, label, lin_indices_3d, lin_indices_2d, num_points):
-        """
-        Backprojects 2D features onto 3D points using precomputed correspondences.
-        """
-        num_label_ft = 1 if len(label.shape) == 2 else label.shape[0] # = num_input_channels
+        num_label_ft = 1 if len(label.shape) == 2 else label.shape[0]
 
         output = label.new(num_label_ft, num_points).fill_(0)
         num_ind = lin_indices_3d[0]

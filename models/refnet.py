@@ -85,10 +85,11 @@ class RefNet(nn.Module):
         if not no_reference:
             self.lang = LangModule(num_class, use_lang_classifier, use_bidir, emb_size)
 
-            self.match = MatchModule(args, num_proposals=num_proposal, det_channel=288)  # bef 256
+            self.match = MatchModule(args, num_proposals=num_proposal, det_channel=288)
 
     def forward(self, data_dict):
-        """Point clouds are (B, N, 3 + input_channels), formatted as (x, y, z, features...)."""
+
+
         if self.args.detector == "GF":
             
             data_dict = self.detector(data_dict)
@@ -112,7 +113,10 @@ class RefNet(nn.Module):
             data_dict = self.proposal(xyz, features, data_dict)
 
         if not self.no_reference:
+
             data_dict = self.lang(data_dict)
+
+
             data_dict = self.match(data_dict)
 
         return data_dict

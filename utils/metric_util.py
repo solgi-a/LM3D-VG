@@ -1,5 +1,3 @@
-""" Utility functions for metric evaluation.
-From: https://github.com/facebookresearch/votenet/blob/master/utils/metric_util.py """
 
 import os
 import sys
@@ -9,13 +7,9 @@ import numpy as np
 
 import trimesh
 
+ 
+
 def multi_scene_precision_recall(labels, pred, iou_thresh, conf_thresh, label_mask, pred_mask=None):
-    '''
-    labels: (B,N,6), pred: (B,M,6)
-    label_mask: (B,N,), pred_mask: (B,M,) - 0/1 masks selecting which boxes to consider.
-    Returns: TP,FP,FN,Precision,Recall
-    '''
-    # masks must be numpy, not torch: mask==1 on a torch tensor gives uint8, not bool
     assert(not torch.is_tensor(label_mask))
     assert(not torch.is_tensor(pred_mask))
     TP, FP, FN = 0, 0, 0
@@ -33,18 +27,18 @@ def multi_scene_precision_recall(labels, pred, iou_thresh, conf_thresh, label_ma
       
 
 def single_scene_precision_recall(labels, pred, iou_thresh, conf_thresh):
-    """Compute TP/FP/FN for predicted bboxes vs ground truth, ignoring classes.
-    labels: (N, 6) gt bboxes. pred: (M, 7) bbox + confidence.
-    """
-    gt_bboxes = labels[:, :6]
-
+    
+    
+    
+    gt_bboxes = labels[:, :6]      
+    
     num_scene_bboxes = gt_bboxes.shape[0]
-    conf = pred[:, 6]
-
+    conf = pred[:, 6]    
+        
     conf_pred_bbox = pred[np.where(conf > conf_thresh)[0], :6]
     num_conf_pred_bboxes = conf_pred_bbox.shape[0]
-
-    iou_arr = np.zeros([num_conf_pred_bboxes, num_scene_bboxes])
+    
+    iou_arr = np.zeros([num_conf_pred_bboxes, num_scene_bboxes])    
     for g_idx in range(num_conf_pred_bboxes):
         for s_idx in range(num_scene_bboxes):            
             iou_arr[g_idx, s_idx] = calc_iou(conf_pred_bbox[g_idx ,:], gt_bboxes[s_idx, :])
@@ -66,7 +60,7 @@ def precision_recall(TP, FP, FN):
     
 
 def calc_iou(box_a, box_b):
-    """IoU of two axis-aligned bboxes; box_a, box_b: 6D center + lengths."""
+        
     max_a = box_a[0:3] + box_a[3:6]/2
     max_b = box_b[0:3] + box_b[3:6]/2    
     min_max = np.array([max_a, max_b]).min(0)
@@ -86,8 +80,7 @@ def calc_iou(box_a, box_b):
 
 if __name__ == '__main__':
     print('running some tests')
-
-    # Test IoU
+    
     box_a = np.array([0,0,0,1,1,1])
     box_b = np.array([0,0,0,2,2,2])
     expected_iou = 1.0/8
@@ -101,8 +94,7 @@ if __name__ == '__main__':
     assert expected_iou == pred_iou, 'function returned wrong IoU'
     
     print('IoU test -- PASSED')
-
-    # Test Precision Recall
+    
     gt_boxes = np.array([[0,0,0,1,1,1],[3, 0, 1, 1, 10, 1]])
     detected_boxes = np.array([[0,0,0,1,1,1, 1.0],[3, 0, 1, 1, 10, 1, 0.9]])
     TP, FP, FN = single_scene_precision_recall(gt_boxes, detected_boxes, 0.5, 0.5)
@@ -119,7 +111,6 @@ if __name__ == '__main__':
     assert TP == 1 and FP == 1 and FN == 1
     assert precision_recall(TP, FP, FN) == (0.5, 0.5)
     
-    # wrong box has low confidence
     detected_boxes = np.array([[0,0,0,1,1,1, 1.0], [-1,-1,0,0.1,0.1,1, 0.1]])
     TP, FP, FN = single_scene_precision_recall(gt_boxes, detected_boxes, 0.5, 0.5)
     assert TP == 1 and FP == 0 and FN == 1
