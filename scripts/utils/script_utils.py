@@ -20,8 +20,10 @@ def set_params_lr_dict(model, base_lr, weight_decay, weight_dict):
             if keys_in_name:
                 result_key = key
                 break
+        # print(result_key, name, ' DEBUG<<< name and result key!!!')
+        # print('Set PARAM', name, 'USING KEY', result_key, [(key, value) for key, value in weight_dict[result_key].items() if key != 'params'])
         params_dict[result_key]['params'].append(param)
-    parameters = []
+    parameters = []  # <<< TODO FOR Parameters
     for key, value in params_dict.items():
         value['Param_Name'] = key
         parameters.append(value)

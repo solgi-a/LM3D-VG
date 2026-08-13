@@ -14,11 +14,11 @@ from datetime import datetime
 from tqdm import tqdm
 from copy import deepcopy
 
-sys.path.append(os.path.join(os.getcwd()))
+sys.path.append(os.path.join(os.getcwd())) # HACK add the root folder
 
 from lib.config import CONF
 from lib.dataset import ScannetReferenceDataset
-from experiments.ablation import ablation_config, ablation_hooks
+from experiments.ablation import ablation_config, ablation_hooks  # ABLATION: revision experiments
 
 from lib.ap_helper import APCalculator, parse_predictions, parse_groundtruths
 from lib.loss_helper import get_loss
@@ -28,9 +28,10 @@ from utils.box_util import get_3d_box
 from data.scannet.model_util_scannet import ScannetDatasetConfig
 
 SCANREFER_TEST = json.load(open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_test.json")))
+# SCANREFER_TEST = json.load(open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_val.json")))
 
 def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config):
-    dataset = ablation_hooks.build_dataset(
+    dataset = ablation_hooks.build_dataset(  # ABLATION: was ScannetReferenceDataset(
         args=args,
         scanrefer=scanrefer,
         scanrefer_new=scanrefer_new,
@@ -50,8 +51,9 @@ def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config
     return dataset, dataloader
 
 def get_model(args, config):
+    # load model
     input_channels = int(args.use_multiview) * 128 + int(args.use_normal) * 3 + int(args.use_color) * 3 + int(not args.no_height)
-    model = ablation_hooks.build_model(
+    model = ablation_hooks.build_model(  # ABLATION: was RefNet(
         args=args,
         num_class=config.num_class,
         num_heading_bin=config.num_heading_bin,
@@ -64,6 +66,7 @@ def get_model(args, config):
         dataset_config=config
     ).cuda()
 
+    #model_name = "model_criteria_25.pth"
     if args.model_tag == '25':
         model_name = "model_criteria_25.pth"
     elif args.model_tag == '5':
@@ -92,6 +95,9 @@ def get_scanrefer(args):
     scanrefer_val_new_scene = []
     scene_id = ""
     for data in scanrefer:
+        # if data["scene_id"] not in scanrefer_val_new:
+        # scanrefer_val_new[data["scene_id"]] = []
+        # scanrefer_val_new[data["scene_id"]].append(data)
         if scene_id != data["scene_id"]:
             scene_id = data["scene_id"]
             if len(scanrefer_val_new_scene) > 0:
@@ -108,15 +114,21 @@ def get_scanrefer(args):
 
 def predict(args):
     print("predict bounding boxes...")
+    # constant
     DC = ScannetDatasetConfig()
 
+    # init training dataset
     print("preparing data...")
     scanrefer, scene_list, scanrefer_val_new = get_scanrefer(args)
 
+    # dataloader
+    #_, dataloader = get_dataloader(args, scanrefer, scene_list, "test", DC)
     _, dataloader = get_dataloader(args, scanrefer, scanrefer_val_new, scene_list, "test", DC)
 
+    # model
     model = get_model(args, DC)
 
+    # config
     POST_DICT = {
         "remove_empty_box": True, 
         "use_3d_nms": True, 
@@ -128,12 +140,14 @@ def predict(args):
         "dataset_config": DC
     } if not args.no_nms else None
 
+    # predict
     print("predicting...")
     pred_bboxes = []
     for data_dict in tqdm(dataloader):
         for key in data_dict:
             data_dict[key] = data_dict[key].cuda()
 
+        # feed
         with torch.no_grad():
             data_dict = model(data_dict)
             """
@@ -151,22 +165,26 @@ def predict(args):
                 _ = parse_predictions(data_dict, POST_DICT)
                 nms_masks = torch.LongTensor(data_dict['pred_mask']).cuda()
 
+                # construct valid mask
                 pred_masks = (nms_masks * objectness_preds_batch == 1).float()
             else:
+                # construct valid mask
                 pred_masks = (objectness_preds_batch == 1).float()
 
-            pred_ref = torch.argmax(data_dict['cluster_ref'], 1)
-            pred_center = data_dict['center']
-            pred_heading_class = torch.argmax(data_dict['heading_scores'], -1)
-            pred_heading_residual = torch.gather(data_dict['heading_residuals'], 2, pred_heading_class.unsqueeze(-1))
-            pred_heading_class = pred_heading_class
-            pred_heading_residual = pred_heading_residual.squeeze(2)
-            pred_size_class = torch.argmax(data_dict['size_scores'], -1)
-            pred_size_residual = torch.gather(data_dict['size_residuals'], 2, pred_size_class.unsqueeze(-1).unsqueeze(-1).repeat(1,1,1,3))
+            #pred_ref = torch.argmax(data_dict['cluster_ref'] * pred_masks, 1) # (B,)
+            pred_ref = torch.argmax(data_dict['cluster_ref'], 1)  # (B,)
+            pred_center = data_dict['center'] # (B,K,3)
+            pred_heading_class = torch.argmax(data_dict['heading_scores'], -1) # B,num_proposal
+            pred_heading_residual = torch.gather(data_dict['heading_residuals'], 2, pred_heading_class.unsqueeze(-1)) # B,num_proposal,1
+            pred_heading_class = pred_heading_class # B,num_proposal
+            pred_heading_residual = pred_heading_residual.squeeze(2) # B,num_proposal
+            pred_size_class = torch.argmax(data_dict['size_scores'], -1) # B,num_proposal
+            pred_size_residual = torch.gather(data_dict['size_residuals'], 2, pred_size_class.unsqueeze(-1).unsqueeze(-1).repeat(1,1,1,3)) # B,num_proposal,1,3
             pred_size_class = pred_size_class
-            pred_size_residual = pred_size_residual.squeeze(2)
+            pred_size_residual = pred_size_residual.squeeze(2) # B,num_proposal,3
 
             for i in range(pred_ref.shape[0]):
+                # compute the iou
                 pred_ref_idx = pred_ref[i]
                 pred_obb = DC.param2obb(
                     pred_center[i, pred_ref_idx, 0:3].detach().cpu().numpy(), 
@@ -177,10 +195,15 @@ def predict(args):
                 )
                 pred_bbox = get_3d_box(pred_obb[3:6], pred_obb[6], pred_obb[0:3])
 
+                # construct the multiple mask
+                #multiple = data_dict["unique_multiple"][i].item()
                 multiple = data_dict["unique_multiple_list"][i][0].item()
 
+                # construct the others mask
+                #others = 1 if data_dict["object_cat"][i] == 17 else 0
                 others = 1 if data_dict["object_cat_list"][i][0] == 17 else 0
 
+                # store data
                 scanrefer_idx = data_dict["scan_idx"][i].item()
                 """ 
                 pred_data = {
@@ -200,6 +223,7 @@ def predict(args):
                 }
                 pred_bboxes.append(pred_data)
 
+    # dump
     print("dumping...")
     pred_path = os.path.join(CONF.PATH.OUTPUT, args.folder, "pred.json")
     with open(pred_path, "w") as f:
@@ -228,14 +252,18 @@ if __name__ == "__main__":
     parser.add_argument("--lang_input", type=str, default='glove+parse')
     parser.add_argument("--detector", type=str, default='VN', choices=["VN", "GF"])
 
-    ablation_config.add_arguments(parser)
+    ablation_config.add_arguments(parser)  # ABLATION: optional CLI overrides
 
-    args = ablation_config.apply(parser.parse_args())
-    print("\n" + ablation_config.describe() + "\n")
+    args = ablation_config.apply(parser.parse_args())  # ABLATION: fold in flags
+    print("\n" + ablation_config.describe() + "\n")    # ABLATION
     args.detection = False
 
     assert args.lang_num_max == 1, 'Test: Lang Num Max == 1'
+    # setting
+    # os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     os.environ['KMP_DUPLICATE_LIB_OK']='True'
+    # reproducibility
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False

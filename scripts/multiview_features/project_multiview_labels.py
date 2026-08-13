@@ -15,7 +15,7 @@ from tqdm import tqdm
 from plyfile import PlyData, PlyElement
 from collections import Counter
 
-sys.path.append(os.path.join(os.getcwd()))
+sys.path.append(os.path.join(os.getcwd())) # HACK add the root folder
 
 from lib.config import CONF
 from lib.projection import ProjectionHelper
@@ -24,11 +24,12 @@ from lib.enet import create_enet_for_3d
 SCANNET_LIST = CONF.SCANNETV2_LIST
 SCANNET_DATA = CONF.PATH.SCANNET_DATA
 SCANNET_FRAME_ROOT = CONF.SCANNET_FRAMES
-SCANNET_FRAME_PATH = os.path.join(SCANNET_FRAME_ROOT, "{}")
+SCANNET_FRAME_PATH = os.path.join(SCANNET_FRAME_ROOT, "{}") # name of the file
 
 ENET_FEATURE_PATH = CONF.ENET_FEATURES_PATH
 ENET_FEATURE_DATABASE = CONF.MULTIVIEW
 
+# projection
 INTRINSICS = [[37.01983, 0, 20, 0],[0, 38.52470, 15.5, 0],[0, 0, 1, 0],[0, 0, 0, 1]]
 PROJECTOR = ProjectionHelper(INTRINSICS, 0.1, 4.0, [41, 32], 0.05)
 
@@ -57,6 +58,7 @@ def get_nyu_to_scannet():
     nyu_idx_to_nyu_label = get_prediction_to_raw()
     scannet_label_to_scannet_idx = {label: i for i, label in enumerate(SCANNET_LABELS)}
 
+    # mapping
     nyu_to_scannet = {}
     for nyu_idx in range(41):
         nyu_label = nyu_idx_to_nyu_label[nyu_idx]
@@ -116,11 +118,13 @@ def resize_crop_image(image, new_image_dims):
 
 def load_image(file, image_dims):
     image = imread(file)
+    # preprocess
     image = resize_crop_image(image, image_dims)
-    if len(image.shape) == 3:
-        image =  np.transpose(image, [2, 0, 1])
+    if len(image.shape) == 3: # color image
+        image =  np.transpose(image, [2, 0, 1])  # move feature to front
         image = transforms.Normalize(mean=[0.496342, 0.466664, 0.440796], std=[0.277856, 0.28623, 0.291129])(torch.Tensor(image.astype(np.float32) / 255.0))
-    elif len(image.shape) == 2:
+    elif len(image.shape) == 2: # label image
+#         image = np.expand_dims(image, 0)
         pass
     else:
         raise
@@ -136,6 +140,7 @@ def load_pose(filename):
 
 def load_depth(file, image_dims):
     depth_image = imread(file)
+    # preprocess
     depth_image = resize_crop_image(depth_image, image_dims)
     depth_image = depth_image.astype(np.float32) / 1000.0
 
@@ -183,6 +188,18 @@ def get_scene_data(scene_list):
     return scene_data
 
 def compute_projection(points, depth, camera_to_world):
+    """
+        :param points: tensor containing all points of the point cloud (num_points, 3)
+        :param depth: depth map (size: proj_image)
+        :param camera_to_world: camera pose (4, 4)
+        
+        :return indices_3d (array with point indices that correspond to a pixel),
+        :return indices_2d (array with pixel indices that correspond to a point)
+
+        note:
+            the first digit of indices represents the number of relevant points
+            the rest digits are for the projection mapping
+    """
     num_points = points.shape[0]
     num_frames = depth.shape[0]
     indices_3ds = torch.zeros(num_frames, num_points + 1).long().cuda()
@@ -223,6 +240,7 @@ if __name__ == "__main__":
     enet = create_enet()
     for scene_id in tqdm(scene_list):
         scene = scene_data[scene_id]
+        # load frames
         frame_list = list(map(lambda x: x.split(".")[0], sorted(os.listdir(SCANNET_FRAME_ROOT.format(scene_id, "color")))))
         scene_images = np.zeros((len(frame_list), 3, 256, 328))
         scene_depths = np.zeros((len(frame_list), 32, 41))
@@ -232,8 +250,10 @@ if __name__ == "__main__":
             scene_depths[i] = load_depth(SCANNET_FRAME_PATH.format(scene_id, "depth", "{}.png".format(frame_id)), [41, 32])
             scene_poses[i] = load_pose(SCANNET_FRAME_PATH.format(scene_id, "pose", "{}.txt".format(frame_id)))
 
+        # compute projections for each chunk
         projection_3d, projection_2d = compute_projection(scene, scene_depths, scene_poses)
         
+        # compute valid projections
         projections = []
         for i in range(projection_3d.shape[0]):
             num_valid = projection_3d[i, 0]
@@ -242,7 +262,25 @@ if __name__ == "__main__":
 
             projections.append((frame_list[i], projection_3d[i], projection_2d[i]))
 
+        # # project
+        # labels = None
+        # for i, projection in enumerate(projections):
+        #     frame_id = projection[0]
+        #     projection_3d = projection[1]
+        #     projection_2d = projection[2]
+        #     if args.gt:
+        #         feat = to_tensor(load_image(ENET_GT_PATH.format(scene_id, "labelv2", "{}.png".format(frame_id)), [41, 32])).unsqueeze(0)
+        #     else:
+        #         image = load_image(SCANNET_FRAME_PATH.format(scene_id, "color", "{}.jpg".format(frame_id)), [328, 256])
+        #         feat = enet(to_tensor(image).unsqueeze(0)).max(1)[1].unsqueeze(1)
 
+        #     proj_label = PROJECTOR.project(feat, projection_3d, projection_2d, scene.shape[0]).transpose(1, 0)
+        #     if i == 0:
+        #         labels = proj_label
+        #     else:
+        #         labels[labels == 0] = proj_label[labels == 0]
+
+        # project
         labels = to_tensor(scene).new(scene.shape[0], len(projections)).fill_(0).long()
         for i, projection in enumerate(projections):
             frame_id = projection[0]
@@ -255,15 +293,24 @@ if __name__ == "__main__":
                 image = load_image(SCANNET_FRAME_PATH.format(scene_id, "color", "{}.jpg".format(frame_id)), [328, 256])
                 feat = enet(to_tensor(image).unsqueeze(0)).max(1)[1].unsqueeze(1)
 
-            proj_label = PROJECTOR.project(feat, projection_3d, projection_2d, scene.shape[0]).transpose(1, 0)
+            proj_label = PROJECTOR.project(feat, projection_3d, projection_2d, scene.shape[0]).transpose(1, 0) # num_points, 1
 
             if args.maxpool:
+                # only apply max pooling on the overlapping points
+                # find out the points that are covered in projection
                 feat_mask = ((proj_label == 0).sum(1) != 1).bool()
+                # find out the points that are not filled with labels
                 point_mask = ((labels == 0).sum(1) == len(projections)).bool()
 
+                # for the points that are not filled with features
+                # and are covered in projection, 
+                # simply fill those points with labels
                 mask = point_mask * feat_mask
                 labels[mask, i] = proj_label[mask, 0]
 
+                # for the points that have already been filled with features
+                # and are covered in projection, 
+                # simply fill those points with labels
                 mask = ~point_mask * feat_mask
                 labels[mask, i] = proj_label[mask, 0]
             else:
@@ -272,6 +319,7 @@ if __name__ == "__main__":
                 else:
                     labels[labels == 0] = proj_label[labels == 0]
 
+        # aggregate
         if args.maxpool:
             new_labels = []
             for label_id in range(labels.shape[0]):
@@ -286,6 +334,7 @@ if __name__ == "__main__":
 
             labels = torch.FloatTensor(np.array(new_labels)[:, np.newaxis])
 
+        # output
         visualize(scene, labels.long().squeeze(1).cpu().numpy())
 
     

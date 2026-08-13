@@ -15,11 +15,11 @@ from datetime import datetime
 from tqdm import tqdm
 from copy import deepcopy
 
-sys.path.append(os.path.join(os.getcwd()))
+sys.path.append(os.path.join(os.getcwd())) # HACK add the root folder
 
 from lib.config import CONF
 from lib.dataset import ScannetReferenceDataset
-from experiments.ablation import ablation_config, ablation_hooks
+from experiments.ablation import ablation_config, ablation_hooks  # ABLATION: revision experiments
 
 from ScanRefer_train import get_num_params
 from lib.ap_helper import APCalculator, parse_predictions, parse_groundtruths
@@ -30,9 +30,10 @@ from data.scannet.model_util_scannet import ScannetDatasetConfig
 
 SCANREFER_TRAIN = json.load(open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_train.json")))
 SCANREFER_VAL = json.load(open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_val.json")))
+# SCANREFER_VAL = json.load(open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_test.json")))
 
 def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config):
-    dataset = ablation_hooks.build_dataset(
+    dataset = ablation_hooks.build_dataset(  # ABLATION: was ScannetReferenceDataset(
         args = args,
         scanrefer=scanrefer,
         scanrefer_new=scanrefer_new,
@@ -52,8 +53,9 @@ def get_dataloader(args, scanrefer, scanrefer_new, all_scene_list, split, config
     return dataset, dataloader
 
 def get_model(args, config):
+    # load model
     input_channels = int(args.use_multiview) * 128 + int(args.use_normal) * 3 + int(args.use_color) * 3 + int(not args.no_height)
-    model = ablation_hooks.build_model(
+    model = ablation_hooks.build_model(  # ABLATION: was RefNet(
         args=args,
         num_class=config.num_class,
         num_heading_bin=config.num_heading_bin,
@@ -118,6 +120,9 @@ def get_scanrefer(args):
     scanrefer_val_new_scene = []
     scene_id = ""
     for data in scanrefer:
+        # if data["scene_id"] not in scanrefer_val_new:
+        # scanrefer_val_new[data["scene_id"]] = []
+        # scanrefer_val_new[data["scene_id"]].append(data)
         if scene_id != data["scene_id"]:
             scene_id = data["scene_id"]
             if len(scanrefer_val_new_scene) > 0:
@@ -134,13 +139,18 @@ def get_scanrefer(args):
 
 def eval_ref(args):
     print("\nevaluate localization...")
+    # constant
     DC = ScannetDatasetConfig()
 
+    # init training dataset
     print("\npreparing data...")
     scanrefer, scene_list, scanrefer_val_new = get_scanrefer(args)
 
+    # dataloader
+    #_, dataloader = get_dataloader(args, scanrefer, scene_list, "val", DC)
     _, dataloader = get_dataloader(args, scanrefer, scanrefer_val_new, scene_list, "val", DC)
 
+    # model
     model = get_model(args, DC)
     
     num_params = get_num_params(model)
@@ -158,6 +168,7 @@ def eval_ref(args):
     print(f"num_params_lang: {num_params_lang}")
     print(f"num_params_match: {num_params_match}")
 
+    # config
     POST_DICT = {
         "remove_empty_box": True, 
         "use_3d_nms": True, 
@@ -169,8 +180,10 @@ def eval_ref(args):
         "dataset_config": DC
     } if not args.no_nms else None
 
+    # random seeds
     seeds = [args.seed] + [2 * i for i in range(args.repeat - 1)]
 
+    # evaluate
     print("\nevaluating...")
     score_path = os.path.join(CONF.PATH.OUTPUT, args.folder, "scores.p")
     pred_path = os.path.join(CONF.PATH.OUTPUT, args.folder, "predictions.p")
@@ -182,6 +195,7 @@ def eval_ref(args):
         others_all = []
         lang_acc_all = []
         for seed in seeds:
+            # reproducibility
             torch.manual_seed(seed)
             torch.backends.cudnn.deterministic = True
             torch.backends.cudnn.benchmark = False
@@ -203,6 +217,7 @@ def eval_ref(args):
                 for key in data:
                     data[key] = data[key].cuda()
 
+                # feed
                 with torch.no_grad():
 
                     start = time.time()
@@ -233,6 +248,7 @@ def eval_ref(args):
                     others += data["ref_others_mask"]
                     lang_acc.append(data["lang_acc"].item())
 
+                    # store predictions
                     ids = data["scan_idx"].detach().cpu().numpy()
                     for i in range(ids.shape[0]):
                         idx = ids[i]
@@ -253,15 +269,18 @@ def eval_ref(args):
                         predictions[scene_id][object_id][ann_id]["gt_bbox"] = data["gt_bboxes"][i]
                         predictions[scene_id][object_id][ann_id]["iou"] = data["ref_iou"][i]
 
+            # save the last predictions
             with open(pred_path, "wb") as f:
                 pickle.dump(predictions, f)
 
+            # save to global
             ref_acc_all.append(ref_acc)
             ious_all.append(ious)
             masks_all.append(masks)
             others_all.append(others)
             lang_acc_all.append(lang_acc)
 
+        # convert to numpy array
         ref_acc = np.array(ref_acc_all)
         ious = np.array(ious_all)
         masks = np.array(masks_all)
@@ -270,6 +289,7 @@ def eval_ref(args):
 
         overall_runtime = np.array([runtime,runtime/9508])
 
+        # save the global scores
         with open(score_path, "wb") as f:
             scores = {
                 "ref_acc": ref_acc_all,
@@ -294,6 +314,7 @@ def eval_ref(args):
         with open(score_path, "rb") as f:
             scores = pickle.load(f)
 
+            # unpack
             ref_acc = np.array(scores["ref_acc"])
             ious = np.array(scores["ious"])
             masks = np.array(scores["masks"])
@@ -313,6 +334,7 @@ def eval_ref(args):
         "in_others": 1
     }
 
+    # evaluation stats
     stats = {k: np.sum(masks[0] == v) for k, v in multiple_dict.items()}
     stats["overall"] = masks[0].shape[0]
     stats = {}
@@ -329,6 +351,7 @@ def eval_ref(args):
     
     stats["overall"]["overall"] = masks[0].shape[0]
 
+    # aggregate scores
     scores = {}
     for k, v in multiple_dict.items():
         for k_o in others_dict.keys():
@@ -343,6 +366,7 @@ def eval_ref(args):
                     / ious[i][np.logical_and(masks[i] == multiple_dict[k], others[i] == others_dict[k_o])].shape[0] \
                     if np.sum(np.logical_and(masks[i] == multiple_dict[k], others[i] == others_dict[k_o])) > 0 else 0
 
+                # store
                 ref_accs.append(running_ref_acc)
                 acc_025ious.append(running_acc_025iou)
                 acc_05ious.append(running_acc_05iou)
@@ -362,6 +386,7 @@ def eval_ref(args):
             running_acc_05iou = ious[i][np.logical_and(masks[i] == multiple_dict[k], ious[i] >= 0.5)].shape[0] \
                 / ious[i][masks[i] == multiple_dict[k]].shape[0] if np.sum(masks[i] == multiple_dict[k]) > 0 else 0
 
+            # store
             ref_accs.append(running_ref_acc)
             acc_025ious.append(running_acc_025iou)
             acc_05ious.append(running_acc_05iou)
@@ -381,10 +406,12 @@ def eval_ref(args):
             running_acc_05iou = ious[i][np.logical_and(others[i] == others_dict[k_o], ious[i] >= 0.5)].shape[0] \
                 / ious[i][others[i] == others_dict[k_o]].shape[0] if np.sum(others[i] == others_dict[k_o]) > 0 else 0
 
+            # store
             ref_accs.append(running_ref_acc)
             acc_025ious.append(running_acc_025iou)
             acc_05ious.append(running_acc_05iou)
 
+        # aggregate
         scores["overall"][k_o] = {}
         scores["overall"][k_o]["ref_acc"] = np.mean(ref_accs)
         scores["overall"][k_o]["acc@0.25iou"] = np.mean(acc_025ious)
@@ -396,15 +423,18 @@ def eval_ref(args):
         running_acc_025iou = ious[i][ious[i] >= 0.25].shape[0] / ious[i].shape[0]
         running_acc_05iou = ious[i][ious[i] >= 0.5].shape[0] / ious[i].shape[0]
 
+        # store
         ref_accs.append(running_ref_acc)
         acc_025ious.append(running_acc_025iou)
         acc_05ious.append(running_acc_05iou)
 
+    # aggregate
     scores["overall"]["overall"] = {}
     scores["overall"]["overall"]["ref_acc"] = np.mean(ref_accs)
     scores["overall"]["overall"]["acc@0.25iou"] = np.mean(acc_025ious)
     scores["overall"]["overall"]["acc@0.5iou"] = np.mean(acc_05ious)
 
+    # report
     print("\nstats:")
     for k_s in stats.keys():
         for k_o in stats[k_s].keys():
@@ -420,22 +450,27 @@ def eval_ref(args):
 
 def eval_det(args):
     print("\nevaluate detection...")
+    # constant
     DC = ScannetDatasetConfig()
     
+    # init training dataset
     print("\npreparing data...")
 
 
     scanrefer, scene_list, scanrefer_val_new = get_scanrefer(args)
 
+    # dataloader
     _, dataloader = get_dataloader(args, scanrefer, scanrefer_val_new, scene_list, "val", DC)
 
 
+    # model
     model = get_model(args, DC)
     
     if args.detector == 'GF' and args.GF_path:
         print("\nloading group free weights...")
         model.detector.load_state_dict(torch.load(os.path.join(CONF.PATH.OUTPUT, args.GF_path))['model'], strict=True)
         
+    # config
     POST_DICT = {
         "remove_empty_box": not args.do_not_remove_empty_box, 
         "use_3d_nms": True, 
@@ -447,6 +482,7 @@ def eval_det(args):
         "dataset_config": DC
     }
     
+    #AP_IOU_THRESHOLDS = [0.25, 0.5]
     AP_IOU_THRESHOLDS = list(np.arange(0,1,0.05))
     AP_CALCULATOR_LIST = [APCalculator(iou_thresh, DC.class2type) for iou_thresh in AP_IOU_THRESHOLDS]
 
@@ -457,6 +493,7 @@ def eval_det(args):
         for key in data:
             data[key] = data[key].cuda()
 
+        # feed
         with torch.no_grad():
             data = model(data)
             _, data = get_loss(args=args,
@@ -480,11 +517,14 @@ def eval_det(args):
                 ap_calculator.step(batch_pred_map_cls, batch_gt_map_cls)
 
     overall_dict = {}
+    # aggregate object detection results and report
     print("\nobject detection sem_acc: {}".format(np.mean(sem_acc)))
     for i, ap_calculator in enumerate(AP_CALCULATOR_LIST):
         print()
         print("-"*10, "iou_thresh: %f"%(AP_IOU_THRESHOLDS[i]), "-"*10)
         metrics_dict = ap_calculator.compute_metrics()
+        #for key in metrics_dict:
+            #print("eval %s: %f"%(key, metrics_dict[key]))
         overall_dict[i] = metrics_dict
     
     score_path = os.path.join(CONF.PATH.OUTPUT, args.folder, "metrics_dict.p")
@@ -525,11 +565,13 @@ if __name__ == "__main__":
     parser.add_argument("--do_not_remove_empty_box", action="store_true")
     parser.add_argument("--use_scanrefer_scenes", action="store_true")
 
+    #----------------------------------------------------------------------------------------------------------------------------------
     
     parser.add_argument('--width', default=1, type=int, help='backbone width')
     parser.add_argument('--num_target', type=int, default=256, help='Proposal number [default: 256]')
     parser.add_argument('--sampling', default='kps', type=str, help='Query points sampling method (kps, fps)')
 
+    # Transformer
     parser.add_argument('--nhead', default=8, type=int, help='multi-head number')
     parser.add_argument('--num_decoder_layers', default=6, type=int, help='number of decoder layers')
     parser.add_argument('--dim_feedforward', default=2048, type=int, help='dim_feedforward')
@@ -540,6 +582,7 @@ if __name__ == "__main__":
     parser.add_argument('--cross_position_embedding', default='xyz_learned', type=str,
                         help='position embedding in cross attention (none, xyz_learned)')
 
+    # Loss
     parser.add_argument('--query_points_generator_loss_coef', default=0.8, type=float)
     parser.add_argument('--obj_loss_coef', default=0.1, type=float, help='Loss weight for objectness loss')
     parser.add_argument('--box_loss_coef', default=1, type=float, help='Loss weight for box loss')
@@ -554,22 +597,31 @@ if __name__ == "__main__":
     parser.add_argument('--size_cls_agnostic', action='store_true', help='Use class-agnostic size prediction.')
 
 
+    # Training
     parser.add_argument('--start_epoch', type=int, default=1, help='Epoch to run [default: 1]')
+    #parser.add_argument('--max_epoch', type=int, default=400, help='Epoch to run [default: 180]')
     parser.add_argument('--optimizer', type=str, default='adamW', help='optimizer')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum for SGD')
     parser.add_argument('--weight_decay', type=float, default=0.0005, help='Optimization L2 weight decay [default: 0.0005]')
     parser.add_argument('--learning_rate', type=float, default=0.004, help='Initial learning rate for all except decoder [default: 0.004]')
     parser.add_argument('--decoder_learning_rate', type=float, default=0.0004, help='Initial learning rate for decoder [default: 0.0004]')
+    #parser.add_argument('--lr-scheduler', type=str, default='step', choices=["step", "cosine"], help="learning rate scheduler")
+    #parser.add_argument('--warmup-epoch', type=int, default=-1, help='warmup epoch')
+    #parser.add_argument('--warmup-multiplier', type=int, default=100, help='warmup multiplier')
+    #parser.add_argument('--lr_decay_epochs', type=int, default=[280, 340], nargs='+', help='for step scheduler. where to decay lr, can be a list')
+    #parser.add_argument('--lr_decay_rate', type=float, default=0.1, help='for step scheduler. decay rate for learning rate')
     parser.add_argument('--clip_norm', default=0.1, type=float,
                         help='gradient clipping max norm')
     parser.add_argument('--bn_momentum', type=float, default=0.1, help='Default bn momeuntum')
     parser.add_argument('--syncbn', action='store_true', help='whether to use sync bn')
 
+    # io
     parser.add_argument('--checkpoint_path', default=None, help='Model checkpoint path [default: None]')
 
+    # others
     parser.add_argument('--ap_iou_thresholds', type=float, default=[0.25, 0.5], nargs='+', help='A list of AP IoU thresholds [default: 0.25,0.5]')
 
-    ablation_config.add_arguments(parser)
+    ablation_config.add_arguments(parser)  # ABLATION: optional CLI overrides
 
     args = parser.parse_args()
 
@@ -590,13 +642,17 @@ if __name__ == "__main__":
         args.model_tag = 25
         args.folder = '2024-08-03_09-24-52_3DVG-LLM-NEW-MINE-NICE'
 
-    args = ablation_config.apply(args)
+    args = ablation_config.apply(args)          # ABLATION: fold in flags, then report them
     print("\n" + ablation_config.describe() + "\n")
 
     os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
     assert args.lang_num_max == 1, 'lang max num == 1; avoid bugs'
+    # setting
+    # os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    # os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
+    # evaluate
     if args.reference: eval_ref(args)
     if args.detection: eval_det(args)
 

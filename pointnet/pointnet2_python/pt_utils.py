@@ -1,4 +1,9 @@
+# Copyright (c) Facebook, Inc. and its affiliates.
+# 
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
+''' Modified based on Ref: https://github.com/erikwijmans/Pointnet2_PyTorch '''
 
 import torch.nn as nn
 import sys
@@ -9,6 +14,7 @@ sys.path.append(os.getcwd())
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class SharedMLP(nn.Sequential):
 
@@ -37,6 +43,7 @@ class SharedMLP(nn.Sequential):
                 )
             )
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class _BNBase(nn.Sequential):
 
@@ -47,24 +54,28 @@ class _BNBase(nn.Sequential):
         nn.init.constant_(self[0].weight, 1.0)
         nn.init.constant_(self[0].bias, 0)
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class BatchNorm1d(_BNBase):
 
     def __init__(self, in_size: int, *, name: str = ""):
         super().__init__(in_size, batch_norm=nn.BatchNorm1d, name=name)
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class BatchNorm2d(_BNBase):
 
     def __init__(self, in_size: int, name: str = ""):
         super().__init__(in_size, batch_norm=nn.BatchNorm2d, name=name)
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class BatchNorm3d(_BNBase):
 
     def __init__(self, in_size: int, name: str = ""):
         super().__init__(in_size, batch_norm=nn.BatchNorm3d, name=name)
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class _ConvBase(nn.Sequential):
 
@@ -121,6 +132,7 @@ class _ConvBase(nn.Sequential):
             if activation is not None:
                 self.add_module(name + 'activation', activation)
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class Conv1d(_ConvBase):
 
@@ -155,6 +167,7 @@ class Conv1d(_ConvBase):
             name=name
         )
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class Conv2d(_ConvBase):
 
@@ -189,6 +202,7 @@ class Conv2d(_ConvBase):
             name=name
         )
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class Conv3d(_ConvBase):
 
@@ -223,6 +237,7 @@ class Conv3d(_ConvBase):
             name=name
         )
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 class FC(nn.Sequential):
 
@@ -261,6 +276,7 @@ class FC(nn.Sequential):
             if activation is not None:
                 self.add_module(name + 'activation', activation)
 
+#-------------------------------------------------------------------------------------------------------------------------------
 
 def set_bn_momentum_default(bn_momentum):
 

@@ -11,13 +11,15 @@ from imageio import imread
 from PIL import Image
 from tqdm import tqdm
 
-sys.path.append(os.path.join(os.getcwd()))
+sys.path.append(os.path.join(os.getcwd())) # HACK add the root folder
 
 from lib.enet import create_enet_for_3d
 from lib.config import CONF
 
+# scannet data
+# NOTE: read only!
 SCANNET_FRAME_ROOT = CONF.SCANNET_FRAMES
-SCANNET_FRAME_PATH = os.path.join(SCANNET_FRAME_ROOT, "{}")
+SCANNET_FRAME_PATH = os.path.join(SCANNET_FRAME_ROOT, "{}") # name of the file
 SCANNET_LIST = CONF.SCANNETV2_LIST
 
 ENET_PATH = CONF.ENET_WEIGHTS
@@ -65,11 +67,12 @@ class EnetDataset(Dataset):
 
     def _load_image(self, file, image_dims):
         image = imread(file)
+        # preprocess
         image = self._resize_crop_image(image, image_dims)
-        if len(image.shape) == 3:
-            image = np.transpose(image, [2, 0, 1])
+        if len(image.shape) == 3: # color image
+            image = np.transpose(image, [2, 0, 1])  # move feature to front
             image = transforms.Normalize(mean=[0.496342, 0.466664, 0.440796], std=[0.277856, 0.28623, 0.291129])(torch.Tensor(image.astype(np.float32) / 255.0))
-        elif len(image.shape) == 2:
+        elif len(image.shape) == 2: # label image
             image = np.expand_dims(image, 0)
         else:
             raise ValueError
@@ -101,13 +104,16 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', type=str, help='gpu', default='0')
     args = parser.parse_args()
 
+    # setting
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
+    # init
     dataset = EnetDataset()
     dataloader = DataLoader(dataset, batch_size=256, shuffle=False, collate_fn=dataset.collate_fn)
     enet = create_enet()
 
+    # feed
     print("extracting multiview features from ENet...")
     for scene_ids, frame_ids, images in tqdm(dataloader):
         features = enet(images)
