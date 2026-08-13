@@ -1,3 +1,26 @@
+"""
+Score a parser's target extraction against ScanRefer's ``object_name`` field.
+
+    # spaCy (variant B) -- parses on the fly
+    python experiments/ablation/parsers/eval_parser_target_accuracy.py --splits train --parser spacy
+
+    # GPT-4o-mini (variant A) and LLaMA (variant C) -- score their existing caches
+    python experiments/ablation/parsers/eval_parser_target_accuracy.py --splits train \
+        --parsed-dir data_parsing/final_parsing_tokenized --tag gpt4o-mini
+    python experiments/ablation/parsers/eval_parser_target_accuracy.py --splits train \
+        --parsed-dir data_parsing/final_parsing_tokenized_llama --tag llama
+
+``object_name`` (e.g. "trash_can") is the annotated class of the referred object, so it is
+free ground truth for the target slot. Three criteria are reported:
+
+  exact       normalised strings identical                 -- strictest
+  substring   either contains the other                    -- credits "trash can" vs "can"
+  fuzzy       token overlap, or edit distance <= 1 on the  -- credits plurals and minor
+              head word                                       spelling drift
+
+A sample file for manual review is written alongside, mixing random draws with failure
+cases.
+"""
 
 import argparse
 import json
@@ -6,6 +29,8 @@ import random
 import sys
 from collections import Counter
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/ablation/parsers/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from experiments.ablation.parsers.run_spacy_parser import load_split
@@ -17,6 +42,7 @@ def normalise(text):
 
 
 def levenshtein(a, b, cap=2):
+    """Edit distance, short-circuited once it provably exceeds ``cap``."""
     if abs(len(a) - len(b)) > cap:
         return cap + 1
     previous = list(range(len(b) + 1))
@@ -35,6 +61,7 @@ def levenshtein(a, b, cap=2):
 
 
 def match_kinds(predicted, truth):
+    """Return which of (exact, substring, fuzzy) hold for this pair."""
     pred, gold = normalise(predicted), normalise(truth)
     if not pred or pred == " ".join(NOT_MENTIONED_TOKENS):
         return {"exact": False, "substring": False, "fuzzy": False}
@@ -51,6 +78,7 @@ def match_kinds(predicted, truth):
 
 
 def _iter_parsed(records, preloaded, nlp):
+    """Yield (record, parsed_dict_of_token_lists) for each annotation."""
     if preloaded is not None:
         for record in records:
             try:
@@ -152,6 +180,8 @@ def main():
             for (gold, pred), n in confusion.most_common(10):
                 print(f"    {n:>5}x  {gold!r} -> {pred!r}")
 
+        # Sample file for manual review: random draws plus failures, because a
+        # qualitative section built only from successes is not a fair evaluation.
         num_fail = min(len(failures), max(1, args.num_samples // 3)) if failures else 0
         num_rand = max(0, args.num_samples - num_fail)
         samples = random.sample(rows, min(num_rand, len(rows)))

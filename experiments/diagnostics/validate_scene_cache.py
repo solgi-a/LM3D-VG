@@ -1,3 +1,35 @@
+"""
+Prove the scene cache is equivalent to the end-to-end model.
+
+Runs a val subset through (a) the full model and (b) the cached path, computes Acc@0.25
+both ways, and requires the two numbers to agree to within 1e-4. If they do not, it
+reports *which tensor* diverged rather than just that the metric moved.
+
+    python experiments/diagnostics/validate_scene_cache.py \
+        --cached_scenes_root cached_scenes \
+        --use_pretrained 2024-12-18_20-40-38_3DVG-FIXED \
+        --use_color --use_normal --num_samples 200
+
+Exit code 0 means the cache is safe to use for ablations; anything else means stop.
+
+Why the comparison can be exact
+------------------------------
+Two sources of nondeterminism sit between the point cloud and Acc@0.25, and both are
+pinned here:
+
+1. The 40k-point subsample (utils/pc_utils.random_sampling) redraws on every
+   __getitem__ even when augment=False. Both paths run with deterministic=True so they
+   see the identical draw.
+2. MatchModule's proposal copy-paste and LangModule's word masking are gated on
+   ``istrain``. The val split sets istrain=0, so neither fires.
+
+Dropout/BatchNorm are handled by model.eval(). What remains is fp16 storage of
+detr_features and aggregated_vote_features, which is why the threshold is 1e-4 on a
+metric rather than bitwise equality on the tensors.
+
+Acc@0.25 is pooled over per-sample IoUs (data_dict["ref_iou"]), not averaged over
+per-batch rates, so the number does not depend on how the batches happen to divide.
+"""
 
 import argparse
 import json
@@ -9,7 +41,10 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/diagnostics/<name>.py` from anywhere.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, REPO_ROOT)
 
 from data.scannet.model_util_scannet import ScannetDatasetConfig
 from experiments.ablation.cached_scenes import SCENE_CACHE_KEYS_REQUIRED, CachedSceneDataset, read_meta
@@ -43,6 +78,8 @@ def load_val(num_samples, lang_num_max):
 
 
 def build_dataset(args, scanrefer, chunks, scene_list, use_cached):
+    # Both paths use deterministic=True so they see the identical 40k-point draw; that is
+    # what makes an exact comparison possible at all.
     return CachedSceneDataset(
         args=args,
         scanrefer=scanrefer,
@@ -127,6 +164,7 @@ def run(args, use_cached, device, collect_tensors=False):
             data_dict=data_dict, config=DC, reference=True,
             use_lang_classifier=not args.no_lang_cls,
         )
+        # Pool the raw per-sample IoUs so the result is batch-partition independent.
         ious.extend(np.asarray(data_dict["ref_iou"]).reshape(-1).tolist())
 
         if collect_tensors and not snapshots:
@@ -147,6 +185,7 @@ def run(args, use_cached, device, collect_tensors=False):
 
 
 def diagnose(args, device):
+    """Locate the divergence by comparing per-tensor statistics between the two paths."""
     print("\n--- per-tensor diagnostics (first batch) ---")
     _, fresh = run(args, use_cached=False, device=device, collect_tensors=True)
     _, cached = run(args, use_cached=True, device=device, collect_tensors=True)
@@ -193,6 +232,10 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lang_num_max", type=int, default=32)
     parser.add_argument("--tolerance", type=float, default=TOLERANCE)
+    parser.add_argument("--out-dir", dest="out_dir",
+                        default=os.path.join("outputs", "diagnostics"),
+                        help="Where to write the PASS/FAIL verdict. This script used to "
+                             "print it and keep nothing.")
     parser.add_argument("--subsample_salt", type=str, default="v1")
     parser.add_argument("--cpu", action="store_true")
 
@@ -243,7 +286,37 @@ def main():
     print(f"  |difference|          = {delta:.3e}   (tolerance {args.tolerance:.1e})")
     print("=" * 60)
 
-    if delta <= args.tolerance:
+    passed = delta <= args.tolerance
+
+    # This verdict gates every cached-protocol ablation, so it has to outlive the
+    # terminal it was printed in. Previously the script wrote nothing at all.
+    report = {
+        "cached_scenes_root": args.cached_scenes_root,
+        "cache_generated_at": meta.get("generated_at"),
+        "cache_checkpoint": meta.get("checkpoint"),
+        "num_samples": args.num_samples,
+        "batch_size": args.batch_size,
+        "lang_num_max": args.lang_num_max,
+        "device": str(device),
+        "tolerance": args.tolerance,
+        "acc_end_to_end": acc_full,
+        "acc_cached": acc_cached,
+        "abs_difference": delta,
+        "passed": bool(passed),
+        "verdict": ("PASS - the cached path reproduces the end-to-end model."
+                    if passed else
+                    "FAIL - the cached path does NOT reproduce the end-to-end model. "
+                    "Do not use this cache for ablations until the cause is found."),
+    }
+    out_dir = args.out_dir if os.path.isabs(args.out_dir) \
+        else os.path.join(REPO_ROOT, args.out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "scene_cache_validation.json")
+    with open(out_path, "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"\nwrote {out_path}")
+
+    if passed:
         print("\nPASS - the cached path reproduces the end-to-end model.")
         return 0
 

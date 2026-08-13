@@ -1,3 +1,33 @@
+"""
+Adjectives and neighbors, scored across parsers -- the two fields nothing else measures.
+
+    RUNS ON: CPU. Seconds. Reads only the parse caches and ScanRefer's JSON.
+
+    python experiments/analysis/parse_field_comparison.py \
+        --parse gpt4o-mini=final_parsing_tokenized \
+        --parse llama=llama_parsing_tokenized_clipped \
+        --parse spacy=spacy_parsing_tokenized
+
+``eval_parser_target_accuracy.py`` scores the **target** field against ``object_name``. The
+other two have no ground truth, yet they are what the fusion network consumes -- TAF reads
+the attribute field and A2F the adjacency field. This scores them reference-free, three
+ways:
+
+    coverage      how often the parser declines the slot ("not mentioned").
+    faithfulness  fraction of emitted tokens occurring in the source description.
+                  Catches invention.
+    agreement     mean per-annotation Jaccard against every other parser.
+
+GPT-4o-mini and LLaMA-3 were built independently, so where they concur forms a reference
+band and a parser far outside it is the outlier. That is weaker than ground truth.
+
+Faithfulness alone is not a quality signal: a rule-based parser copies tokens verbatim and
+scores near 100% by construction, and a parser emitting nothing scores perfectly. It only
+means something read next to coverage.
+
+Writes outputs/analysis/parse_field_comparison/{md,json,png}. Scope is parse quality; no
+model is run and no prediction is read.
+"""
 
 import argparse
 import os
@@ -11,6 +41,9 @@ from experiments.analysis.common import (
 from experiments.ablation.parsers.tokenize_parse import (
     FIELD_MAX_TOKENS, NOT_MENTIONED_TOKENS)
 
+#: The two fields this script exists for. `target` is deliberately absent -- it already
+#: has a scorer with real ground truth, and repeating it here would invite quoting a
+#: reference-free number when a referenced one exists.
 FIELDS = ("adjectives", "neighbors")
 
 
@@ -19,10 +52,12 @@ def key_of(record):
 
 
 def is_empty(tokens):
+    """True when the parser declined the slot."""
     return not tokens or list(tokens) == list(NOT_MENTIONED_TOKENS)
 
 
 def jaccard(a, b):
+    """Token-set overlap. Two declined fields agree perfectly -- that is a real agreement."""
     set_a, set_b = set(a or []), set(b or [])
     if not set_a and not set_b:
         return 1.0
@@ -31,12 +66,22 @@ def jaccard(a, b):
 
 
 def phrase_count(tokens):
+    """Comma-separated segments, exactly as linguistic_complexity.metric_neighbors counts
+    them, so the numbers here line up with that report."""
     if is_empty(tokens):
         return 0
     return list(tokens).count(",") + 1
 
 
+# ======================================================================================
+
 def collect(caches, records):
+    """Per-parser per-field statistics over the annotations every parser covers.
+
+    Restricting to the common key set is what makes the comparison paired: a parser that
+    simply skipped the hard descriptions must not look good by having a smaller, easier
+    denominator.
+    """
     keys, parses = [], {name: {} for name in caches}
     for record in records:
         key = key_of(record)
@@ -82,6 +127,7 @@ def field_stats(keys, parses, records_by_key, name, field):
 
 
 def agreement_matrix(keys, parses, names, field):
+    """Mean per-annotation Jaccard for every parser pair."""
     matrix = {}
     for i, a in enumerate(names):
         for b in names[i + 1:]:
@@ -92,6 +138,7 @@ def agreement_matrix(keys, parses, names, field):
 
 
 def consensus_agreement(keys, parses, names, field, reference_names):
+    """Each parser's mean Jaccard against the reference parsers (excluding itself)."""
     scores = {}
     for name in names:
         others = [r for r in reference_names if r != name]
@@ -104,6 +151,8 @@ def consensus_agreement(keys, parses, names, field, reference_names):
             for k in keys) / max(len(keys), 1)
     return scores
 
+
+# ======================================================================================
 
 def make_plot(results, names, path):
     try:
@@ -181,6 +230,8 @@ def main():
             caches[name] = load_parse_cache(folder, args.split, args.parsing_root)
             folders[name] = folder
         except FileNotFoundError as error:
+            # Skipping rather than dying: a missing optional variant should not stop the
+            # report on the ones that are present.
             print(f"  skipping {name}: {error}")
     if not caches:
         print("no parse cache could be loaded")
@@ -242,6 +293,7 @@ def main():
         lines += [f"## {field}", "", table, "", "**Pairwise agreement**", "",
                   pair_table, ""]
 
+    # Verdicts, written from the numbers rather than asserted.
     lines += ["## Reading", ""]
     for field in FIELDS:
         stats = results[field]["parsers"]

@@ -1,3 +1,41 @@
+"""
+Render the qualitative failure figures.
+
+    RUNS ON: CPU. About a minute for six cases. No GPU, no checkpoint.
+
+    python experiments/analysis/render_failure_figures.py
+    python experiments/analysis/render_failure_figures.py --cases 3 --dpi 300
+
+``failure_cases.py`` picks and diagnoses the cases and writes ``pred.ply`` / ``gt.ply`` per
+case; this turns them into finished panels, instead of wireframes somebody has to open in
+MeshLab and screenshot.
+
+Each case becomes one PNG with four panels:
+
+  1  bird's-eye view of the whole room, so a predicted box landing on a different instance
+     across the room is visible as such. Every other object of the target's class is
+     outlined faintly, which makes distractor confusion legible at a glance.
+  2  oblique 3-D close-up of the region containing both boxes, in scene colour.
+  3  front elevation of the same crop. The orthographic projection resolves silhouettes
+     more crisply than a 3-D scatter, and it is usually this panel that makes the referred
+     object recognisable in print.
+  4  description, parse, diagnosis and IoU, so the figure is self-contained.
+
+Green is ground truth, red is the prediction throughout.
+
+Point clouds are drawn with gamma 0.65 applied to the ScanNet colours, which are captured
+dark enough that furniture otherwise merges into its own shadow; close-up points are
+depth-sorted because matplotlib's 3-D scatter does not do it and far geometry would paint
+over near geometry.
+
+Coordinate frames
+-----------------
+The boxes in ``predictions.p`` live in the same axis-aligned frame as
+``data/scannet/scannet_data/<scene>_aligned_vert.npy``, checked by matching a ground-truth
+box against the corresponding row of ``<scene>_aligned_bbox.npy`` and re-checked at run
+time for every case. A case that fails the check is still drawn but carries a visible
+warning.
+"""
 
 import argparse
 import json
@@ -16,10 +54,20 @@ SCANNET_DATA = os.path.join(REPO, "data", "scannet", "scannet_data")
 GT_COLOR = "#12A150"
 PRED_COLOR = "#D62828"
 DISTRACTOR_COLOR = "#8A8FA3"
-CROP_MARGIN = 0.9
+CROP_MARGIN = 0.9          # metres of context around the two boxes in the close-up
 
+
+# ======================================================================================
+# geometry
+# ======================================================================================
 
 def box_edges(corners):
+    """Return the 12 edges of a box given its 8 corners, without assuming an ordering.
+
+    ScanRefer's boxes are axis-aligned, so the common case is exact: rebuild the box
+    from its extent. The fallback connects each corner to its three nearest
+    neighbours, which recovers the edges of any convex box whatever the ordering.
+    """
     corners = np.asarray(corners, dtype=float)
     unique_per_axis = [np.unique(np.round(corners[:, axis], 4)) for axis in range(3)]
     if all(len(values) == 2 for values in unique_per_axis):
@@ -67,6 +115,10 @@ def box_center(corners):
     return (corners.min(axis=0) + corners.max(axis=0)) / 2.0
 
 
+# ======================================================================================
+# data
+# ======================================================================================
+
 def load_scene(scene_id):
     path = os.path.join(SCANNET_DATA, f"{scene_id}_aligned_vert.npy")
     if not os.path.isfile(path):
@@ -78,6 +130,7 @@ def load_scene(scene_id):
 
 
 def load_scene_boxes(scene_id):
+    """(N, 8) rows of [cx, cy, cz, dx, dy, dz, semantic_label, object_id]."""
     path = os.path.join(SCANNET_DATA, f"{scene_id}_aligned_bbox.npy")
     return np.load(path) if os.path.isfile(path) else None
 
@@ -91,6 +144,7 @@ def corners_from_row(row):
 
 
 def verify_frames(scene_id, object_id, gt_corners):
+    """Confirm the prediction file and the .npy scene share a coordinate frame."""
     boxes = load_scene_boxes(scene_id)
     if boxes is None:
         return None
@@ -102,6 +156,7 @@ def verify_frames(scene_id, object_id, gt_corners):
 
 
 def same_class_boxes(scene_id, object_id):
+    """Other instances sharing the target's semantic label -- the distractors."""
     boxes = load_scene_boxes(scene_id)
     if boxes is None:
         return []
@@ -114,6 +169,7 @@ def same_class_boxes(scene_id, object_id):
 
 
 def discover_cases(cases_dir, limit):
+    """Prefer failure_cases.json; fall back to the per-case folders it wrote."""
     manifest = os.path.join(cases_dir, "failure_cases.json")
     if os.path.isfile(manifest):
         with open(manifest) as handle:
@@ -138,6 +194,10 @@ def discover_cases(cases_dir, limit):
                       "cause": "_".join(parts[1:2]), "description": "", "iou": None})
     return {}, cases[:limit]
 
+
+# ======================================================================================
+# rendering
+# ======================================================================================
 
 def render_case(case, predictions, out_dir, dpi, max_points):
     import matplotlib
@@ -167,12 +227,13 @@ def render_case(case, predictions, out_dir, dpi, max_points):
     figure = plt.figure(figsize=(16.5, 4.8))
     grid = figure.add_gridspec(1, 4, width_ratios=[1.0, 1.0, 1.0, 0.80], wspace=0.13)
 
+    # ---- panel 1: bird's eye of the whole room ---------------------------------------
     ax1 = figure.add_subplot(grid[0, 0])
     step = max(1, len(xyz) // max_points)
     sampled = xyz[::step]
     sampled_rgb = rgb[::step] if rgb is not None else None
     if sampled_rgb is not None:
-        sampled_rgb = np.clip(sampled_rgb, 0, 1) ** 0.65
+        sampled_rgb = np.clip(sampled_rgb, 0, 1) ** 0.65      # same lift as the close-up
     ax1.scatter(sampled[:, 0], sampled[:, 1], s=2.0,
                 c=sampled_rgb if sampled_rgb is not None else "#B8BEC9",
                 linewidths=0, rasterized=True)
@@ -194,17 +255,24 @@ def render_case(case, predictions, out_dir, dpi, max_points):
     ax1.set_ylabel("y (m)", fontsize=8)
     ax1.tick_params(labelsize=7)
 
+    # ---- panels 2 and 3: the close-up ------------------------------------------------
+    # The crop is not thinned (it holds far fewer than `max_points` anyway), markers are
+    # large enough to form a surface, and colour is gamma-corrected out of ScanNet's
+    # shadows. Points are drawn back to front since matplotlib's 3-D scatter does not
+    # depth-sort.
     both = np.vstack([gt, pred])
     low, high = both.min(axis=0) - CROP_MARGIN, both.max(axis=0) + CROP_MARGIN
     inside = np.all((xyz >= low) & (xyz <= high), axis=1)
     crop = xyz[inside]
     crop_rgb = rgb[inside] if rgb is not None else None
-    if len(crop) > max_points:
+    if len(crop) > max_points:                    # only bites on very large crops
         keep = np.linspace(0, len(crop) - 1, max_points).astype(int)
         crop = crop[keep]
         crop_rgb = crop_rgb[keep] if crop_rgb is not None else None
 
     if crop_rgb is not None:
+        # Gamma < 1 lifts the midtones; ScanNet scans are captured dark and the raw
+        # values leave most surfaces indistinguishable from their own shadow.
         crop_rgb = np.clip(crop_rgb, 0, 1) ** 0.65
     colour = crop_rgb if crop_rgb is not None else "#B8BEC9"
 
@@ -212,6 +280,7 @@ def render_case(case, predictions, out_dir, dpi, max_points):
 
     ax2 = figure.add_subplot(grid[0, 1], projection="3d")
     if len(crop):
+        # back to front along the view direction at azim=-62, elev=24
         depth = crop[:, 0] * np.cos(np.deg2rad(-62)) + crop[:, 1] * np.sin(np.deg2rad(-62))
         order = np.argsort(-depth)
         ax2.scatter(crop[order, 0], crop[order, 1], crop[order, 2], s=marker,
@@ -226,9 +295,12 @@ def render_case(case, predictions, out_dir, dpi, max_points):
     for axis_setter in (ax2.set_xticks, ax2.set_yticks, ax2.set_zticks):
         axis_setter([])
 
+    # Front elevation. A flat orthographic projection resolves object silhouettes far
+    # more crisply than any 3-D scatter, which is what makes the referred object
+    # actually recognisable in print.
     ax3d = figure.add_subplot(grid[0, 2])
     if len(crop):
-        order = np.argsort(crop[:, 1])[::-1]
+        order = np.argsort(crop[:, 1])[::-1]          # far wall first
         ax3d.scatter(crop[order, 0], crop[order, 2], s=marker,
                      c=colour[order] if crop_rgb is not None else colour,
                      linewidths=0, rasterized=True)
@@ -244,9 +316,14 @@ def render_case(case, predictions, out_dir, dpi, max_points):
     ax3d.set_ylabel("z (m)", fontsize=8)
     ax3d.tick_params(labelsize=7)
 
+    # ---- panel 3: the words ------------------------------------------------------------
     ax3 = figure.add_subplot(grid[0, 3])
     ax3.axis("off")
 
+    # Only the count this figure draws goes on the panel. failure_cases.py derives its
+    # same-class count from the NYU40 mapping over the ScanRefer records, which need not
+    # equal the number of boxes carrying this scene's semantic label. Both are in
+    # figures.json.
     signals = case.get("signals", {}) or {}
     lines = [("cause", case.get("cause", "?")),
              ("IoU", f"{iou:.3f}"),
@@ -281,6 +358,7 @@ def render_case(case, predictions, out_dir, dpi, max_points):
     figure.suptitle(
         f"{case.get('cause', 'failure')}  --  {scene_id}  object {object_id}  "
         f"annotation {ann_id}  --  IoU {iou:.2f}", fontsize=10.5)
+    # tight_layout cannot handle the 3D axes, so the margins are set explicitly.
     figure.subplots_adjust(left=0.045, right=0.99, top=0.88,
                            bottom=0.17 if misaligned else 0.12)
 

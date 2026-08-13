@@ -1,3 +1,20 @@
+"""
+Run the rule-based spaCy parser over ScanRefer and write the files lib/dataset.py reads.
+
+    python experiments/ablation/parsers/run_spacy_parser.py --splits train val
+
+Writes, mirroring the GPT-4o-mini layout exactly:
+
+    data_parsing/spacy_parsing/parsed_result_{split}.json            (raw phrases)
+    data_parsing/spacy_parsing_tokenized/tokenized_parsed_result_{split}.json
+
+To run the ablation, set in experiments/ablation/ablation_config.py
+
+    ABLATION.PARSING_FOLDER = "spacy_parsing_tokenized"
+
+or pass ``--parsing_folder spacy_parsing_tokenized``. Nothing else changes -- the language
+module and fusion network are untouched.
+"""
 
 import argparse
 import json
@@ -6,6 +23,8 @@ import sys
 import time
 from collections import defaultdict
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/ablation/parsers/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from experiments.ablation.parsers.spacy_parser import NOT_MENTIONED, load_parser, parse_doc
@@ -15,6 +34,7 @@ FIELDS = ("target", "adjectives", "neighbors")
 
 
 def load_split(split, data_root):
+    """Load ScanRefer, tolerating the repo-root copy of the val file."""
     candidates = [
         os.path.join(data_root, f"ScanRefer_filtered_{split}.json"),
         os.path.join(os.getcwd(), f"ScanRefer_filtered_{split}.json"),
@@ -51,6 +71,7 @@ def run_split(split, args):
         stats[f"capped_{field}"] = 0
 
     t0 = time.time()
+    # nlp.pipe is markedly faster than calling nlp() per description.
     texts = [r["description"].lower() if r["description"] else "" for r in records]
     docs = nlp.pipe(texts, batch_size=256)
 

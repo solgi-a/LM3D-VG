@@ -1,3 +1,31 @@
+"""
+Evaluate the cached path on a machine with no usable GPU, and time it.
+
+    RUNS ON: CPU. Sized by --num-samples; the default 128 takes about a minute after a
+    one-off ~30 s load of the 933 MB GloVe table. The script measures its own throughput
+    and extrapolates for the full split.
+
+    python experiments/diagnostics/cached_eval_cpu.py --num-samples 128
+    python experiments/diagnostics/cached_eval_cpu.py --num-samples 0      # whole split
+
+``validate_scene_cache.py`` is the authoritative check but needs CUDA -- it calls
+``get_loss`` and ``get_eval``, which between them contain 32 hardcoded ``.cuda()`` calls.
+This answers the narrower "does the cached path reproduce the reported accuracy?" without
+entering those functions, via two shims confined to this file:
+
+* ``torch.Tensor.cuda`` becomes identity on CPU. Five call sites in the cached forward
+  path hardcode it -- ``models/lang_module.py:56`` and
+  ``models/match_module.py:158,190,214,245``. Every tensor is already on CPU, so this is a
+  no-op on a real GPU run.
+* Proposal selection is reproduced rather than imported. ``lib/eval_helper.py:129-134``
+  picks ``argmax(cluster_ref * objectness_mask)`` with the mask
+  ``argmax(objectness_scores, 2) == 1``, straight from the cache. The winning box is read
+  from the cache's ``pred_bboxes`` rather than rebuilt from centre/heading/size, and
+  ground truth comes from ``predictions.p``.
+
+The accuracy will not match the same checkpoint's end-to-end number to 1e-4 -- deterministic
+vs random point subsampling -- but lands within a point or two when the cache is sound.
+"""
 
 import argparse
 import os
@@ -12,6 +40,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 def build_args(cli):
+    """The eval defaults ScanRefer_eval.py uses, as a plain namespace."""
     return argparse.Namespace(
         gpu="0", batch_size=cli.batch_size, lang_num_max=1,
         num_points=cli.num_points, num_proposals=cli.num_proposals, num_scenes=-1,
@@ -27,6 +56,7 @@ def build_args(cli):
         self_position_embedding="loc_learned", cross_position_embedding="xyz_learned",
         size_cls_agnostic=False, bn_momentum=0.1, syncbn=False,
         use_checkpoint="", use_pretrained=None,
+        # ablation flags
         use_cached_scenes=True, cached_scenes_root=cli.cached_scenes_root,
         deterministic_subsample=True, subsample_salt=cli.subsample_salt,
         parsing_folder=cli.parsing_folder, disable_copy_paste=None, keep_checkpoint=True,
@@ -35,6 +65,7 @@ def build_args(cli):
 
 
 def chunk_scanrefer(scanrefer, lang_num_max=1):
+    """Reproduces get_scanrefer()'s chunking from scripts/ScanRefer_eval.py."""
     chunks, current, scene_id = [], [], ""
     for data in scanrefer:
         if scene_id != data["scene_id"]:
@@ -97,6 +128,8 @@ def main():
             pass
 
     if device.type == "cpu":
+        # See the module docstring: five call sites in the cached forward path hardcode
+        # .cuda(). Everything is already on CPU, so identity is the correct behaviour.
         torch.Tensor.cuda = lambda self, *a, **k: self          # noqa: E731
 
     from data.scannet.model_util_scannet import ScannetDatasetConfig
@@ -132,6 +165,8 @@ def main():
     print(f"[timing] dataset ready in {dataset_seconds:.1f}s "
           f"(GloVe table dominates this)")
 
+    # shuffle=False so batch order matches `chunks`, which is how each row is mapped
+    # back to its annotation.
     loader = DataLoader(dataset, batch_size=cli.batch_size, shuffle=False)
 
     model = ablation_hooks.build_model(
@@ -151,6 +186,10 @@ def main():
         print(f"\ncheckpoint not found: {checkpoint_path}")
         return 1
     state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    # ablation_hooks wraps load_state_dict on this instance and raises when any parameter
+    # would be left at its random initialisation (ABLATION.STRICT_CHECKPOINT). Present
+    # that as a clean refusal rather than a traceback -- it is a configuration problem
+    # with a known fix, not a crash.
     try:
         model.load_state_dict(state, strict=False)
     except RuntimeError as error:
@@ -174,11 +213,11 @@ def main():
                     batch[key] = batch[key].to(device)
             batch = model(batch)
 
-            cluster_ref = batch["cluster_ref"]
-            objectness = batch["objectness_scores"]
+            cluster_ref = batch["cluster_ref"]                       # (B, num_proposal)
+            objectness = batch["objectness_scores"]                  # (B, num_proposal, 2)
             mask = (torch.argmax(objectness, 2) == 1).float()
             selected = torch.argmax(cluster_ref * mask, 1).cpu().numpy()
-            boxes = batch["pred_bboxes"].cpu().numpy()
+            boxes = batch["pred_bboxes"].cpu().numpy()               # (B, num_proposal, 8, 3)
 
             for row in range(len(selected)):
                 if position >= len(chunks):

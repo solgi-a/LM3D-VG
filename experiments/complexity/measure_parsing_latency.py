@@ -1,3 +1,29 @@
+"""
+Sentence-parsing latency and cost, and the offline-vs-online deployment question.
+
+    # deployment analysis only -- instant, no network, no GPU
+    python experiments/complexity/measure_parsing_latency.py --mode offline_check
+
+    # spaCy (variant B) -- local, ~1 minute for 500 descriptions
+    python experiments/complexity/measure_parsing_latency.py --mode spacy --num_samples 500
+
+    # GPT-4o-mini (variant A) -- real API calls, needs OPENAI_API_KEY
+    python experiments/complexity/measure_parsing_latency.py --mode gpt --num_samples 100
+
+    # everything
+    python experiments/complexity/measure_parsing_latency.py --mode all --num_samples 100
+
+Parsing latency is additive to user-facing query time only if parsing happens per query at
+inference. Here it does not: lib/dataset.py loads a precomputed JSON once at dataset
+construction and indexes it by (scene_id, object_id, ann_id), and no parser is invoked in
+the forward path. For the benchmark numbers parsing cost is therefore amortised to zero;
+it is real only for an unseen sentence at deployment. The two scenarios are measured and
+kept apart.
+
+The GPT leg makes real API calls over distinct val descriptions -- latency varies with
+input length, so repeating one sentence would be misleading -- and reads token usage from
+the response to derive $/query.
+"""
 
 import argparse
 import json
@@ -12,6 +38,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from lib.config import CONF  # noqa: E402
 
+#: Reconstructed to match the observed schema of data_parsing/final_parsing/:
+#: three surface-phrase fields, the literal "not mentioned" when absent.
 GPT_SYSTEM_PROMPT = (
     "You parse 3D scene referring expressions. Given one description, return a "
     "JSON object with exactly three string fields: \"target\" (the referred "
@@ -21,11 +49,14 @@ GPT_SYSTEM_PROMPT = (
     "description does not supply. Return only the JSON object."
 )
 
+#: USD per 1M tokens. Defaults are gpt-4o-mini list prices; override via CLI,
+#: prices change and the paper should quote the date they were taken.
 DEFAULT_PRICE_IN = 0.150
 DEFAULT_PRICE_OUT = 0.600
 
 
 def load_val_descriptions(n, seed=42):
+    """n distinct val descriptions (not one sentence repeated)."""
     path = os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_val.json")
     with open(path) as f:
         records = json.load(f)
@@ -50,7 +81,12 @@ def stats_ms(times_s):
     }
 
 
+# --------------------------------------------------------------------------------------
+# 1. deployment analysis -- offline or online?
+# --------------------------------------------------------------------------------------
+
 def offline_check():
+    """Establish from the code whether parsing is in the inference path."""
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     findings = {}
 
@@ -98,6 +134,10 @@ def offline_check():
     return findings
 
 
+# --------------------------------------------------------------------------------------
+# 2. spaCy (variant B) -- local, no network
+# --------------------------------------------------------------------------------------
+
 def measure_spacy(descriptions, model="en_core_web_sm", warmup=5):
     from experiments.ablation.parsers.spacy_parser import load_parser, parse_with_spacy
 
@@ -129,6 +169,10 @@ def measure_spacy(descriptions, model="en_core_web_sm", warmup=5):
     })
     return out
 
+
+# --------------------------------------------------------------------------------------
+# 3. GPT-4o-mini (variant A) -- real API calls
+# --------------------------------------------------------------------------------------
 
 def measure_gpt(descriptions, model, price_in, price_out, warmup=2):
     try:
@@ -207,6 +251,8 @@ def measure_gpt(descriptions, model, price_in, price_out, warmup=2):
     return out
 
 
+# --------------------------------------------------------------------------------------
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -225,11 +271,12 @@ def main():
     args = p.parse_args()
 
     print("=" * 78)
-    print("  PARSING LATENCY & COST  (Reviewer #4 comment 5, Reviewer #2)")
+    print("  PARSING LATENCY & COST")
     print("=" * 78)
 
     report = {"config": vars(args)}
 
+    # --- always: the deployment question ---
     dep = offline_check()
     report["deployment"] = dep
     print("\n-- deployment analysis --")
@@ -277,8 +324,7 @@ def main():
         "Report grounding-network latency and parsing latency as SEPARATE rows. "
         "Summing them describes a scenario the paper never benchmarks.",
         "For every ScanRefer/ReferIt3D number in the paper, parsing is offline "
-        "and precomputed -- state this explicitly; it is the direct answer to "
-        "Reviewer #4 comment 5.",
+        "and precomputed.",
         "The online/deployment scenario (one unseen sentence) is the only case "
         "where parse latency is additive. Quote it as such.",
         "spaCy (variant B) removes the API dependency and its cost entirely, at "
@@ -287,10 +333,45 @@ def main():
     ]
 
     os.makedirs(args.output, exist_ok=True)
-    out_path = os.path.join(args.output, "parsing_latency_report.json")
+    # One file per mode. A single shared filename meant whichever mode ran second silently
+    # overwrote the first, so the offline-check verdict and the spaCy latency measurements
+    # could never coexist on disk even though both had run.
+    out_path = os.path.join(args.output, f"parsing_latency_report_{args.mode}.json")
     with open(out_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nwrote {out_path}")
+
+    # Keep the historical path as a merged view. Existing readers index it by top-level
+    # key (`deployment`, `config`, ...), so those keys are hoisted from every mode that
+    # has run -- a later mode can no longer erase an earlier mode's section. The full
+    # per-mode detail lives under "modes".
+    merged_path = os.path.join(args.output, "parsing_latency_report.json")
+    modes = {}
+    if os.path.isfile(merged_path):
+        try:
+            with open(merged_path) as f:
+                existing = json.load(f)
+            modes = existing.get("modes") or {}
+            if not modes and isinstance(existing.get("config"), dict):
+                # A pre-fix single-mode file: keep it under its own mode name.
+                previous = existing.get("config", {}).get("mode")
+                if previous:
+                    modes[previous] = existing
+        except (ValueError, OSError):
+            modes = {}
+    modes[args.mode] = report
+
+    merged = {}
+    for name in sorted(modes, key=lambda m: m == args.mode):   # current mode last = wins
+        for key, value in modes[name].items():
+            merged[key] = value
+    merged["modes"] = modes
+    merged["_note"] = ("Top-level keys are hoisted from every --mode that has run, so "
+                       "existing readers keep working; per-mode detail is under 'modes'. "
+                       "Each mode also has its own parsing_latency_report_<mode>.json.")
+    with open(merged_path, "w") as f:
+        json.dump(merged, f, indent=2)
+    print(f"wrote {merged_path}  (modes: {', '.join(sorted(modes))})")
     return 0
 
 

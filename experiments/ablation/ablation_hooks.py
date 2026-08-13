@@ -1,3 +1,16 @@
+"""
+Indirection layer between the original entry-point scripts and the revision experiments.
+
+Exists so ScanRefer_train.py / ScanRefer_eval.py / predict.py / scripts/visualize.py need
+only a handful of changed lines. Every function here returns the original object unless a
+flag in experiments/ablation/ablation_config.py is on, so with all experiments disabled the code path is
+unchanged.
+
+Used as:
+
+    dataset = ablation_hooks.build_dataset(args=args, ...)   # was ScannetReferenceDataset(...)
+    model   = ablation_hooks.build_model(args=args, ...)     # was RefNet(...)
+"""
 
 import importlib.util
 import os
@@ -8,11 +21,17 @@ from lib.dataset import ScannetReferenceDataset
 
 _augment_notice_shown = False
 _fusion_variant_installed = None
-_current_match_module = None
+_current_match_module = None      # captured before the first swap, so it can be restored
 
+#: "models/match_module original.py" -- the space makes it un-importable by name, so it
+#: is loaded from its path instead. Kept exactly where it is; nothing edits it.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _ORIGINAL_MATCH_MODULE = os.path.join(_REPO_ROOT, "models", "match_module original.py")
 
+#: Modules that bind ``MatchModule`` into their own namespace at import time. Patching
+#: only ``models.match_module`` is not enough: ScanRefer_train.py and ScanRefer_eval.py
+#: both do ``from models.refnet import RefNet`` at module scope, so by the time
+#: build_model() runs, models.refnet already holds a reference to the original class.
 _MATCH_MODULE_HOLDERS = (
     "models.match_module",
     "models.refnet",
@@ -25,19 +44,28 @@ def _cached_or_deterministic():
 
 
 def build_dataset(**kwargs):
+    """Return a dataset instance: ScannetReferenceDataset, or the ablation subclass."""
     global _augment_notice_shown
 
+    # Imported lazily so a run with the experiments off never touches this code.
     from experiments.ablation.cached_scenes import CachedSceneDataset
 
     if not _cached_or_deterministic():
         if not ABLATION.LAZY_LANG_DATA:
             return ScannetReferenceDataset(**kwargs)
+        # No ablation is on, but the eager language preload alone needs ~36 GB. Use the
+        # subclass purely for its lazy loading, with both experiment behaviours off, so
+        # the run is byte-for-byte the original one and merely fits in memory.
         return CachedSceneDataset(
             use_cache=False, cached_scenes_root=None, deterministic=False,
             lazy_lang_data=True, **kwargs,
         )
 
     if ABLATION.USE_CACHED_SCENES and kwargs.get("augment", False):
+        # ScanRefer_train.py hardcodes augment=True for the train split. The cache is
+        # built from un-augmented point clouds, so augmented GT boxes would not match the
+        # cached proposals. Resolve it here rather than asking the caller to remember,
+        # but warn loudly -- it is a real change of training protocol.
         kwargs["augment"] = False
         if not _augment_notice_shown:
             _augment_notice_shown = True
@@ -60,6 +88,7 @@ def build_dataset(**kwargs):
 
 
 def load_original_match_module():
+    """Import the class from "models/match_module original.py" by path."""
     if not os.path.isfile(_ORIGINAL_MATCH_MODULE):
         raise FileNotFoundError(
             f"FUSION_VARIANT='original' needs {_ORIGINAL_MATCH_MODULE!r}, which is not "
@@ -73,6 +102,7 @@ def load_original_match_module():
 
 
 def _bind_match_module(cls):
+    """Rebind ``MatchModule`` in every namespace that holds one. Returns those patched."""
     patched = []
     for name in _MATCH_MODULE_HOLDERS:
         module = sys.modules.get(name)
@@ -83,6 +113,14 @@ def _bind_match_module(cls):
 
 
 def install_fusion_variant():
+    """Point every namespace that holds ``MatchModule`` at the selected variant.
+
+    Idempotent, and reversible: switching back to "current" restores the class captured
+    the first time this ran, so a single process can build both variants in turn. Nothing
+    on disk is modified -- models/match_module.py is left exactly as it is and the swap
+    happens in memory, so a run with FUSION_VARIANT unset behaves identically to the
+    original code.
+    """
     global _fusion_variant_installed, _current_match_module
     variant = ABLATION.FUSION_VARIANT
     if variant not in ("current", "original"):
@@ -116,6 +154,14 @@ def install_fusion_variant():
 
 
 def _check_loaded(model, state_dict, report):
+    """Fail loudly when a checkpoint leaves part of the model at its random init.
+
+    Only submodules present in BOTH sides are checked, so loading a detector-only file
+    into a full RefNet stays legal -- lang./match. are simply absent from the file and
+    are therefore not its business. What this does catch is the case that motivated it:
+    a fusion head whose names half-match, which torch reports through `missing_keys` and
+    scripts/ScanRefer_eval.py then discards by passing strict=False.
+    """
     incoming_prefixes = {key.split(".")[0] for key in state_dict}
     own_prefixes = {key.split(".")[0] for key in model.state_dict()}
     shared = incoming_prefixes & own_prefixes
@@ -147,11 +193,24 @@ def _check_loaded(model, state_dict, report):
 
 
 def _enforce_strict_checkpoint(model):
+    """Wrap ``model.load_state_dict`` so a partial load cannot pass silently.
+
+    Bound on the instance, not the class, so it only covers models produced here.
+    scripts/ScanRefer_eval.py calls ``model.load_state_dict(torch.load(path),
+    strict=False)`` on exactly this object, which is why no entry-point script needs
+    editing to get the check.
+
+    Not covered: ScanRefer_train.py's ``--use_checkpoint`` path, which goes through
+    ``comp_weight()``. That builds a complete state_dict out of the model's own keys and
+    copies only the shape-matching entries in, so by the time load_state_dict sees it
+    nothing is missing and there is nothing here to detect. It silently drops mismatched
+    tensors the same way -- worth knowing, but it is a separate problem.
+    """
     inner = model.load_state_dict
 
     def load_state_dict(state_dict, strict=False, **kwargs):
         report = inner(state_dict, strict=False, **kwargs)
-        missing = _check_loaded(model, state_dict, report)
+        missing = _check_loaded(model, state_dict, report)   # raises unless allowed
         kept = len(set(state_dict) & set(model.state_dict()))
         unused = len(report.unexpected_keys)
         print(f"[ABLATION] checkpoint: {kept} tensor(s) loaded, "
@@ -164,6 +223,7 @@ def _enforce_strict_checkpoint(model):
 
 
 def build_model(**kwargs):
+    """Return a model instance: RefNet, or the cached-feature variant."""
     install_fusion_variant()
 
     if not ABLATION.USE_CACHED_SCENES:
@@ -179,4 +239,5 @@ def build_model(**kwargs):
 
 
 def skip_pretrained_detector():
+    """True when loading detector weights would be pointless (no detection branch)."""
     return bool(ABLATION.USE_CACHED_SCENES)

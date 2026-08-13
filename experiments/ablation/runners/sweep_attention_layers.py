@@ -1,3 +1,58 @@
+"""
+Attention-layer sweep.
+
+    RUNS ON: GPU; best run in Colab. Training arms only -- the SELF_TEST mode below is
+             CPU and takes seconds.
+
+    python experiments/ablation/runners/sweep_attention_layers.py
+    (edit the CONFIG block; this runner takes no command-line flags)
+
+The neighbour count and the graph depth were each chosen against a reported curve; the
+number of attention layers was not. This sweeps it.
+
+Which "attention layers"?
+-------------------------
+There are two stacks, so both are swept:
+
+  fusion_depth   MatchModule's self-attention stack. ``models/refnet.py`` constructs
+                 ``MatchModule(args, num_proposals=..., det_channel=288)`` and takes the
+                 constructor default ``depth=3``, which sizes ``self_attn``,
+                 ``self_attn_post``, ``tgt_cross_attn``, ``adj_cross_attn``,
+                 ``ngh_cross_attn`` (and ``cross_attn`` at 2x).
+
+  dec_layers     The proposal decoder. ``models/refnet.py`` hard-codes
+                 ``config_transformer = {..., 'dec_layers': 2, 'nheads': 8, ...}``.
+
+Neither is reachable from the command line. ``--nhead`` and ``--num_decoder_layers`` exist
+but do nothing here: they are read only inside the ``args.detector == "GF"`` branch of
+``models/refnet.py``, and the debug block in ``scripts/ScanRefer_train.py`` forces
+``args.detector = 'VN'``. Passing them would produce a sweep of identical runs.
+
+How the sweep changes them
+--------------------------
+The two values are overridden at runtime rather than by editing the repository. For each
+arm the script writes a small launcher next to that arm's outputs which patches the two
+constructors and hands control to the unmodified training script via ``runpy`` with
+``run_name='__main__'``. The launcher stays on disk as the record of what that arm ran.
+
+Interaction with the debug block
+--------------------------------
+``scripts/ScanRefer_train.py`` ends with ``debug = True`` and a block that overwrites the
+parsed arguments after argparse has run: ``args.tag = '3DVG-GF'``, ``args.epoch = 100``,
+``args.batch_size = 8``, ``args.lr = 0.002``, ``args.detector = 'VN'`` and both checkpoint
+paths.
+
+  * ``--tag`` is discarded, so every run lands in ``outputs/<timestamp>_3DVG-GF``. This
+    sweep renames each arm's folder once it finishes rather than fighting the override.
+  * ``--epoch`` and ``--batch_size`` are discarded, so ``EPOCH`` and ``BATCH_SIZE`` below
+    are recorded for provenance but do not take effect; shortening the arms means editing
+    that debug block.
+
+Cost
+----
+Six arms at 100 epochs is a lot of GPU time. ``ARMS`` can be trimmed to the three
+fusion-depth values, leaving the decoder at its published setting.
+"""
 
 import json
 import os
@@ -5,29 +60,38 @@ import subprocess
 import sys
 import time
 
+# ======================================================================================
+# CONFIG -- edit here
+# ======================================================================================
 
-RUN = True
-SELF_TEST = False
+RUN = True                       # master switch
+SELF_TEST = False                # CPU: build MatchModule at each depth, print param
+                                 # counts, and exit. Proves the patch works without a GPU.
 
+# (fusion_depth, dec_layers). None means "leave the code's value alone".
+# Published configuration is (3, 2).
 ARMS = [
     (1, None),
     (2, None),
-    (3, None),
+    (3, None),                   # published
     (4, None),
+    # (3, 1),                    # decoder sweep -- uncomment if you have the GPU hours
+    # (3, 4),
 ]
 
-FUSION_HEADS = None
+FUSION_HEADS = None              # MatchModule head count; None keeps the default 4
 PARSING_FOLDER = "final_parsing_tokenized"
-USE_CACHED_SCENES = True
+USE_CACHED_SCENES = True         # frozen-detector protocol, as with the other ablations
 CACHED_SCENES_ROOT = "cached_scenes"
 SEED = 42
-EPOCH = 50
-BATCH_SIZE = 8
+EPOCH = 50                       # now honoured: ScanRefer_train.py no longer clobbers CLI args
+BATCH_SIZE = 8                   # now honoured: ScanRefer_train.py no longer clobbers CLI args
 EXTRA_ARGS = ["--use_color", "--use_normal"]
-RUN_EVAL = True
+RUN_EVAL = True                  # evaluate each arm after training
 STOP_ON_FAILURE = True
 OUT_ROOT = os.path.join("outputs", "ablation", "attention_layer_sweep")
 
+# ======================================================================================
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -114,6 +178,7 @@ def train_argv(name):
 
 
 def newest_output_folder(before):
+    """The debug block forces the tag, so identify the new run by what appeared."""
     output_root = os.path.join(REPO_ROOT, "outputs")
     if not os.path.isdir(output_root):
         return None
@@ -124,6 +189,7 @@ def newest_output_folder(before):
 
 
 def self_test():
+    """CPU. Confirm the depth patch actually resizes the attention stacks."""
     import argparse
 
     sys.path.insert(0, REPO_ROOT)
@@ -156,6 +222,11 @@ def self_test():
 
 
 def _cli_guard():
+    """Configured by the CONFIG block above, not by command-line flags.
+
+    Without this, a mistyped flag would be ignored and a multi-hour run would start
+    anyway. Any argument prints the configuration and exits instead.
+    """
     if len(sys.argv) <= 1:
         return False
     print(__doc__)

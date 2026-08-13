@@ -1,3 +1,42 @@
+"""
+Select grounding failures and attribute a cause to each.
+
+    RUNS ON: CPU. Seconds. No GPU, no model -- boxes come from predictions.p.
+
+    python experiments/analysis/failure_cases.py \
+        --predictions outputs/2024-12-18_20-40-38_3DVG-FIXED/predictions.p \
+        --top 6
+
+``scripts/visualize.py`` renders whatever scene it is pointed at; picking which scene is
+what this handles.
+
+Cause attribution
+-----------------
+Every signal is computable offline from artifacts already on disk. Rules are evaluated in
+order and the first match wins, since an earlier cause subsumes the later ones -- if the
+parser named the wrong class, the distractor count downstream is beside the point.
+
+``parse_target_wrong``    the parser's ``target`` does not match ``object_name``.
+``distractor_confusion``  IoU below ``--distractor-iou`` with several instances of the
+                          target class in the scene: right class, wrong instance.
+``small_object``          GT box volume in the bottom ``--small-percentile`` -- a
+                          proposal-resolution failure, not a language one.
+``localization_drift``    IoU in [drift-low, 0.25): right region, imprecise box.
+``complex_language``      long description or many spatial cues, no cause above.
+``unattributed``          none of the above.
+
+Output
+------
+``outputs/analysis/failure_cases/`` with a markdown report, a JSON record, and one
+directory per case:
+
+    pred.ply     predicted box, red      (wireframe, viewable in MeshLab/CloudCompare)
+    gt.ply       ground-truth box, green
+    case.txt     description, parse, IoU, cause, and the signals behind it
+
+The report also prints the matching ``scripts/visualize.py`` command per case, for
+rendering the full scene mesh behind the boxes.
+"""
 
 import argparse
 import os
@@ -6,6 +45,8 @@ from collections import Counter, defaultdict
 
 import numpy as np
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/analysis/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from experiments.ablation.parsers.eval_parser_target_accuracy import match_kinds
@@ -48,6 +89,7 @@ CAUSE_TEXT = {
 
 
 def scene_class_counts(records):
+    """{scene_id: {object_name: number of distinct instances}} from ScanRefer itself."""
     instances = defaultdict(lambda: defaultdict(set))
     for record in records:
         instances[record["scene_id"]][record["object_name"]].add(record["object_id"])
@@ -71,6 +113,7 @@ def attribute(row, signals, args):
 
 
 def select(cases, top, strategy):
+    """Pick `top` cases, either the worst overall or spread across causes."""
     if strategy == "worst":
         return sorted(cases, key=lambda c: c["iou"])[:top]
 
@@ -80,6 +123,8 @@ def select(cases, top, strategy):
     for group in by_cause.values():
         group.sort(key=lambda c: c["iou"])
 
+    # Round-robin over causes ordered by how common they are, so the sample is diverse
+    # but still weighted towards the failure modes that actually dominate.
     order = [cause for cause, _ in Counter(c["cause"] for c in cases).most_common()]
     chosen, index = [], 0
     while len(chosen) < top and any(by_cause[c] for c in order):
@@ -135,7 +180,7 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.25,
                         help="A failure is IoU below this.")
     parser.add_argument("--top", type=int, default=6,
-                        help="How many cases to dump. The roadmap asks for at least 3.")
+                        help="How many cases to dump.")
     parser.add_argument("--strategy", default="diverse", choices=["diverse", "worst"])
     parser.add_argument("--distractor-iou", dest="distractor_iou", type=float, default=0.05)
     parser.add_argument("--drift-low", dest="drift_low", type=float, default=0.10)

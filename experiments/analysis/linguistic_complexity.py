@@ -1,3 +1,33 @@
+"""
+Grounding accuracy split by linguistic complexity.
+
+    RUNS ON: CPU. ~20 s for three metrics, ~60 s including dependency depth.
+             No GPU, no model, no re-evaluation -- it re-reads predictions.p.
+
+    python experiments/analysis/linguistic_complexity.py \
+        --predictions ours=outputs/2024-12-18_20-40-38_3DVG-FIXED/predictions.p
+
+    # with a baseline
+    python experiments/analysis/linguistic_complexity.py \
+        --predictions ours=outputs/<run>/predictions.p \
+        --predictions 3DVG-Trans=outputs/<baseline>/predictions.p
+
+The Unique/Multiple split measures object ambiguity; this bins the val set by language
+complexity instead:
+
+``tokens``     description length in tokens, quartile bins.
+``depth``      spaCy dependency-tree depth, quartile bins -- structural rather than
+               superficial.
+``neighbors``  adjacent-object phrases our parser extracted, counted as comma-separated
+               segments of ``neighbors`` (0 when "not mentioned").
+``spatial``    spatial-relation cues, matched against the lexicon in
+               ``experiments/ablation/parsers/spacy_parser.py`` (``SPATIAL_PHRASES`` then
+               ``SPATIAL_PREPS``). A per-relation-type accuracy table comes with it.
+
+With two or more models the per-bin gap (first model minus each other) is computed along
+with a Spearman correlation of that gap against bin index, so the trend across bins is
+visible. With one model only the accuracy trend is available.
+"""
 
 import argparse
 import json
@@ -6,6 +36,8 @@ import sys
 
 import numpy as np
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/analysis/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from experiments.analysis.common import (
@@ -32,11 +64,16 @@ from experiments.analysis.common import (
 METRICS = ("tokens", "depth", "neighbors", "spatial")
 
 
+# ======================================================================================
+# Complexity measures
+# ======================================================================================
+
 def metric_tokens(rows, _args):
     return [len(row.get("token") or []) for row in rows]
 
 
 def metric_depth(rows, args):
+    """Dependency-tree depth per description, cached to disk (spaCy is the slow part)."""
     cache_path = args.depth_cache
     cache = {}
     if cache_path and os.path.isfile(cache_path):
@@ -68,9 +105,16 @@ def metric_depth(rows, args):
 
 
 def _max_depth(doc):
+    """Longest head-chain from any token to its sentence root.
+
+    Compared by token index, not identity: spaCy materialises a *new* ``Token`` object on
+    every ``.head`` access, so ``node.head is not node`` is true even at the root and the
+    walk never terminates.
+    """
     best = 0
     for token in doc:
         depth, node, guard = 0, token, 0
+        # `guard` protects against a malformed parse producing a head cycle.
         while node.head.i != node.i and guard < len(doc) + 1:
             depth += 1
             node = node.head
@@ -80,6 +124,7 @@ def _max_depth(doc):
 
 
 def metric_neighbors(rows, args):
+    """Adjacent-object phrases our own parser extracted, per annotation."""
     cache = load_parse_cache(args.parse_folder, args.split, args.parsing_root)
     from experiments.ablation.parsers.tokenize_parse import NOT_MENTIONED_TOKENS
 
@@ -93,6 +138,8 @@ def metric_neighbors(rows, args):
         if not tokens or tokens == NOT_MENTIONED_TOKENS:
             values.append(0)
             continue
+        # The field is a comma-separated list of relation phrases and the tokenizer
+        # emits "," as its own token, so segments = commas + 1.
         values.append(tokens.count(",") + 1)
     return values
 
@@ -100,11 +147,13 @@ def metric_neighbors(rows, args):
 def _spatial_lexicon():
     from experiments.ablation.parsers.spacy_parser import SPATIAL_PHRASES, SPATIAL_PREPS
 
+    # Longest first, so "in front of" is consumed before "in".
     phrases = sorted((p.split() for p in SPATIAL_PHRASES), key=len, reverse=True)
     return phrases, set(SPATIAL_PREPS)
 
 
 def spatial_hits(tokens):
+    """Spatial-relation cues in a token list, as surface strings, non-overlapping."""
     phrases, preps = _spatial_lexicon()
     lowered = [str(t).lower() for t in tokens]
     hits, i = [], 0
@@ -142,10 +191,16 @@ METRIC_LABELS = {
     "spatial": "spatial-relation words (fixed lexicon)",
 }
 
+#: Metrics whose natural bins are the small integers themselves, not quantiles.
 DISCRETE_METRICS = {"neighbors": 3, "spatial": 3}
 
 
+# ======================================================================================
+# Binning
+# ======================================================================================
+
 def assign_bins(values, metric, num_bins):
+    """Return (bin_index_per_row, bin_labels)."""
     values = np.asarray(values)
     if metric in DISCRETE_METRICS:
         top = DISCRETE_METRICS[metric]
@@ -167,6 +222,7 @@ def assign_bins(values, metric, num_bins):
 
 
 def summarise(rows, indices, labels, models, thresholds):
+    """Per-bin statistics for every model. Returns a list of bin dicts."""
     bins = []
     for index, label in enumerate(labels):
         mask = indices == index
@@ -187,8 +243,21 @@ def summarise(rows, indices, labels, models, thresholds):
     return bins
 
 
+# ======================================================================================
+# Reporting
+# ======================================================================================
+
 def render_metric(metric, labels, bins, models, threshold, rows, values,
                   bin_indices, bootstrap=2000, seed=42):
+    """(markdown table, findings dict) for one metric at one IoU threshold.
+
+    The table is binned because that is what belongs in the paper. The **statistics are
+    not**: a Spearman correlation over four bin means has n=4, and scipy's asymptotic
+    p-value degenerates to exactly 0 whenever |rho| = 1, which is easy to reach with four
+    points and would report a spurious certainty. Every test below therefore runs on the
+    per-sample data -- the continuous complexity value against the per-sample hit -- so
+    n is the full number of annotations and the p-value means something.
+    """
     reference = models[0]
     others = models[1:]
 
@@ -223,6 +292,9 @@ def render_metric(metric, labels, bins, models, threshold, rows, values,
     }
 
     for name in others:
+        # Per-sample advantage: +1 where only the reference is right, -1 where only the
+        # other is, 0 where they agree. Correlating that against complexity is exactly
+        # the question "does our advantage grow with complexity", with full n.
         other_hits = hits(name)
         advantage = [a - b for a, b in zip(reference_hits, other_hits)]
         rho_gap, p_gap = spearman(list(values), advantage)
@@ -231,6 +303,8 @@ def render_metric(metric, labels, bins, models, threshold, rows, values,
         other_array = np.asarray(other_hits, dtype=bool)
         indices = np.asarray(bin_indices)
 
+        # Per-bin McNemar: both models saw the same annotations in each bin, so the gap
+        # inside a bin is a paired comparison and deserves its own p-value.
         per_bin = []
         for index in range(len(bins)):
             mask = indices == index
@@ -242,6 +316,10 @@ def render_metric(metric, labels, bins, models, threshold, rows, values,
             per_bin.append({"gap": float(a.mean() - b.mean()), "n": int(mask.sum()),
                             "p_value": p_bin})
 
+        # The statistic that matters here: does the gap in the most
+        # complex bin exceed the gap in the least complex one? A bootstrap over
+        # annotations gives a CI for that difference directly, and is far better powered
+        # than a rank correlation on a three-valued advantage variable.
         populated = [i for i, entry in enumerate(per_bin) if entry["n"] > 0]
         widening = {"available": False}
         if len(populated) >= 2:
@@ -281,6 +359,7 @@ def render_metric(metric, labels, bins, models, threshold, rows, values,
 
 
 def verdict_lines(metric, findings, models):
+    """The honest read of one metric, in plain sentences."""
     reference = models[0]
     lines = []
     trend = findings["trends"][reference]
@@ -292,8 +371,7 @@ def verdict_lines(metric, findings, models):
 
     if not findings["gaps"]:
         lines.append("  No baseline supplied, so this says nothing about whether the "
-                     "advantage over prior work grows with complexity -- which is the "
-                     "actual claim the reviewer is testing. Add --predictions "
+                     "advantage over prior work grows with complexity. Add --predictions "
                      "NAME=PATH for a baseline.")
         return lines
 
@@ -335,6 +413,7 @@ def verdict_lines(metric, findings, models):
 
 
 def relation_type_table(rows, models, threshold, top_k):
+    """Accuracy per spatial-relation type, not just per relation count."""
     from collections import Counter
 
     counts = Counter()
@@ -399,6 +478,8 @@ def make_plot(results, models, threshold, path):
     return path
 
 
+# ======================================================================================
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -455,6 +536,7 @@ def main():
 
     rows = list(base_rows.values())
     if len(models) > 1:
+        # Only annotations every model predicted can support a gap column.
         complete = [row for row in rows if len(row["ious"]) == len(models)]
         if len(complete) != len(rows):
             print(f"[join] restricting to {len(complete)}/{len(rows)} annotations "
@@ -501,8 +583,8 @@ def main():
         print(table)
         results["relation_types"] = {"counts": counts}
         report_lines.append("\n## Accuracy by spatial-relation type\n")
-        report_lines.append("Reviewer #4 asked for the *number and type* of spatial "
-                            "relations; the metric above covers number, this covers type.\n")
+        report_lines.append("The metric above covers the number of spatial relations; "
+                            "this covers their type.\n")
         report_lines.append(table)
 
     json_path = save_json({
@@ -529,10 +611,9 @@ def main():
             print(f"wrote {plot_path}")
 
     if len(models) == 1:
-        print("\nNOTE: only one model was supplied. The reviewer's question is whether "
-              "the\n      advantage over a baseline grows with complexity, which needs a "
-              "second\n      --predictions NAME=PATH. See the docstring for the required "
-              "format.")
+        print("\nNOTE: only one model was supplied. Whether the advantage over a "
+              "baseline grows\n      with complexity needs a second --predictions "
+              "NAME=PATH. See the docstring\n      for the required format.")
     return 0
 
 

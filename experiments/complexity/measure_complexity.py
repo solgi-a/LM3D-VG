@@ -1,3 +1,33 @@
+"""
+FLOPs, peak GPU memory and grounding-network latency.
+
+    python experiments/complexity/measure_complexity.py --variant both \
+        --use_color --use_normal --latency_iters 100
+
+Two model variants, always labelled separately:
+
+  end2end   RefNet -- PointNet++ -> VoteNet -> DETR decoder -> language -> fusion. The
+            deployed model.
+  cached    CachedRefNet -- language + fusion only, reading precomputed detector output
+            (experiments/ablation/scenes_cache.py). What the ablations train on, and much
+            cheaper.
+
+Per variant:
+
+  * FLOPs      via torch.utils.flop_counter.FlopCounterMode. Dispatch-based, so it
+               survives the data-dependent control flow here (knn_graph, GCNConv, custom
+               deformable attention) that trace-based counters like fvcore/thop choke on.
+               Counts matmul/conv/bmm/attention; elementwise ops, softmax and
+               normalisation are not counted.
+  * Peak GPU memory  inference (eval, no_grad, batch 1) and training (train mode,
+               gradients, real batch size).
+  * Latency    warmed up, torch.cuda.synchronize()-bracketed, as mean / std / p50 / p95.
+
+Modules holding parameters but registering zero FLOPs are listed as "uncounted" rather
+than folded into the total. The report notes that the in-repo latency measurement in
+ScanRefer_eval.py is neither warmed up nor synchronised, and carries GPU name and
+torch/CUDA versions alongside the numbers.
+"""
 
 import argparse
 import json
@@ -10,6 +40,8 @@ from collections import defaultdict
 import numpy as np
 import torch
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/complexity/measure_complexity.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from data.scannet.model_util_scannet import ScannetDatasetConfig  # noqa: E402
@@ -17,11 +49,29 @@ from lib.config import CONF  # noqa: E402
 
 DC = ScannetDatasetConfig()
 
+#: Token caps enforced by lib/dataset.py (_transform_parsed allocates these rows).
 TGT_TOKENS, ADJ_TOKENS, NGH_TOKENS = 7, 17, 75
 GLOVE_DIM = 300
 
 
+# --------------------------------------------------------------------------------------
+# input construction
+# --------------------------------------------------------------------------------------
+
 def build_data_dict(args, batch_size, istrain, device, variant):
+    """A shape-exact data_dict, matching what lib/dataset.py emits.
+
+    Shapes are taken from the real dataloader contract, not invented:
+      point_clouds      (B, num_points, 3 + input_feature_dim)
+      lang_feat_list    (B, L, MAX_DES_LEN, 300)
+      target/adjectives/neighbors   (B, L, 7|17|75, 300)
+      *_len             (B, L)
+      istrain           (B,)
+    FLOPs and latency depend only on these shapes, so synthetic values with the
+    correct shapes give the same answer as a real batch at a fraction of the
+    cost (loading a real batch pulls in the 978 MB GloVe pickle). Use
+    --real_sample to cross-check the shapes against the actual dataset.
+    """
     L = args.lang_num_max
     B = batch_size
     d = {}
@@ -29,6 +79,7 @@ def build_data_dict(args, batch_size, istrain, device, variant):
     if variant == "end2end":
         d["point_clouds"] = torch.rand(B, args.num_points, 3 + args.input_feature_dim)
     else:
+        # Cached detector output, exactly the keys experiments/ablation/cached_scenes.py stores.
         K, NH, NS = args.num_proposals, DC.num_heading_bin, DC.num_size_cluster
         d["detr_features"] = torch.randn(B, K, 288)
         d["center"] = torch.randn(B, K, 3)
@@ -43,6 +94,7 @@ def build_data_dict(args, batch_size, istrain, device, variant):
         d["aggregated_vote_xyz"] = torch.randn(B, K, 3)
         d["aggregated_vote_features"] = torch.randn(B, K, 128)
 
+    # ---- language branch inputs (identical for both variants) ----
     d["lang_feat_list"] = torch.randn(B, L, CONF.TRAIN.MAX_DES_LEN, GLOVE_DIM)
     d["target"] = torch.randn(B, L, TGT_TOKENS, GLOVE_DIM)
     d["adjectives"] = torch.randn(B, L, ADJ_TOKENS, GLOVE_DIM)
@@ -54,12 +106,14 @@ def build_data_dict(args, batch_size, istrain, device, variant):
     d["ngh_len"] = torch.full((B, L), NGH_TOKENS, dtype=torch.int64)
     d["first_obj_list"] = torch.zeros(B, L, dtype=torch.int64)
     d["unk"] = torch.randn(B, GLOVE_DIM)
+    # istrain gates MatchModule's copy-paste and LangModule's word masking.
     d["istrain"] = torch.full((B,), int(istrain), dtype=torch.int64)
 
     return {k: v.to(device) for k, v in d.items()}
 
 
 def verify_shapes_against_dataset(args, built):
+    """Optional cross-check that the synthetic shapes match a real val sample."""
     from experiments.ablation.cached_scenes import CachedSceneDataset
 
     with open(os.path.join(CONF.PATH.DATA, "ScanRefer_filtered_val.json")) as f:
@@ -86,6 +140,10 @@ def verify_shapes_against_dataset(args, built):
     return mismatches
 
 
+# --------------------------------------------------------------------------------------
+# model construction
+# --------------------------------------------------------------------------------------
+
 def build_model(args, variant, device):
     if variant == "end2end":
         from models.refnet import RefNet as cls
@@ -109,6 +167,11 @@ def build_model(args, variant, device):
 
 
 def param_counts(model):
+    """Trainable parameters overall and per top-level branch.
+
+    Mirrors get_num_params() in ScanRefer_train.py so the numbers in this
+    report are directly comparable to what training already logs.
+    """
     def n(m):
         return int(sum(p.numel() for p in m.parameters() if p.requires_grad))
 
@@ -119,13 +182,22 @@ def param_counts(model):
     return out
 
 
+# --------------------------------------------------------------------------------------
+# FLOPs
+# --------------------------------------------------------------------------------------
+
 def measure_flops(model, data_dict, depth=2):
+    """FLOPs for one forward pass via torch's built-in FlopCounterMode.
+
+    Returns (total_flops, per_module_dict, uncounted_modules, note).
+    """
     try:
         from torch.utils.flop_counter import FlopCounterMode
     except ImportError:
         return None, {}, [], "torch.utils.flop_counter unavailable (needs torch >= 2.1)"
 
     model.eval()
+    # Signature drifted across torch versions; try the richest form first.
     counter = None
     for kwargs in ({"mods": model, "depth": depth, "display": False},
                    {"depth": depth, "display": False},
@@ -154,6 +226,7 @@ def measure_flops(model, data_dict, depth=2):
     except Exception:
         pass
 
+    # Honesty check: modules that own parameters but registered no FLOPs.
     counted = set()
     for k in per_module:
         parts = k.split(".")
@@ -162,7 +235,7 @@ def measure_flops(model, data_dict, depth=2):
     uncounted = []
     for name, sub in model.named_modules():
         if not name or list(sub.children()):
-            continue
+            continue  # leaves only
         if not any(p.requires_grad for p in sub.parameters(recurse=False)):
             continue
         top = name.split(".")[0]
@@ -175,7 +248,12 @@ def measure_flops(model, data_dict, depth=2):
     return total, per_module, uncounted, note
 
 
+# --------------------------------------------------------------------------------------
+# memory
+# --------------------------------------------------------------------------------------
+
 def measure_peak_memory(model, data_dict, device, train_mode, surrogate_backward=True):
+    """Peak allocated memory for one forward (+ backward if train_mode)."""
     if device.type != "cuda":
         return None
 
@@ -187,6 +265,10 @@ def measure_peak_memory(model, data_dict, device, train_mode, surrogate_backward
         model.train()
         out = model(dict(data_dict))
         if surrogate_backward:
+            # A surrogate scalar on the model's own output. This deliberately
+            # EXCLUDES lib/loss_helper.get_loss, whose reference/vote losses need
+            # ground-truth tensors; the report states this so the number is not
+            # mistaken for full end-to-end training memory.
             loss = out["cluster_ref"].float().sum()
             loss.backward()
         model.zero_grad(set_to_none=True)
@@ -201,7 +283,23 @@ def measure_peak_memory(model, data_dict, device, train_mode, surrogate_backward
     return round(float(peak), 1)
 
 
+# --------------------------------------------------------------------------------------
+# latency
+# --------------------------------------------------------------------------------------
+
 def enable_cpu_shim():
+    """Let the model run on CPU by neutralising hardcoded .cuda() calls.
+
+    models/lang_module.py:56 and a few sites in models/match_module.py call
+    ``.cuda()`` unconditionally, so the language+fusion path cannot execute on a
+    CPU-only machine. FLOPs and parameter counts are hardware-independent and
+    worth having without a GPU, so this shim makes ``Tensor.cuda()`` a no-op
+    **inside this measurement process only**.
+
+    It changes nothing in the repository and nothing about the arithmetic: the
+    same ops run on the same shapes, just on CPU. Latency and memory measured
+    under the shim are meaningless and are suppressed/labelled accordingly.
+    """
     if not hasattr(torch.Tensor, "_orig_cuda"):
         torch.Tensor._orig_cuda = torch.Tensor.cuda
 
@@ -219,6 +317,13 @@ def _sync(device):
 
 
 def measure_latency(model, data_dict, device, iters=100, warmup=10):
+    """Warmed-up, synchronised per-forward latency. Returns a stats dict in ms.
+
+    The synchronisation is the point: CUDA kernels are asynchronous, so timing
+    a forward pass without torch.cuda.synchronize() measures kernel *launch*
+    time, not execution. The existing measurement in ScanRefer_eval.py has no
+    sync and no warmup, which is why its number is not directly comparable.
+    """
     model.eval()
     with torch.no_grad():
         for _ in range(warmup):
@@ -244,6 +349,10 @@ def measure_latency(model, data_dict, device, iters=100, warmup=10):
         "min_ms": round(float(t.min()), 3),
     }
 
+
+# --------------------------------------------------------------------------------------
+# environment
+# --------------------------------------------------------------------------------------
 
 def environment(device):
     env = {
@@ -273,6 +382,10 @@ def environment(device):
     return env
 
 
+# --------------------------------------------------------------------------------------
+# per-variant driver
+# --------------------------------------------------------------------------------------
+
 def run_variant(args, variant, device):
     print(f"\n{'=' * 78}\n  VARIANT: {variant}\n{'=' * 78}")
     res = {"variant": variant}
@@ -282,8 +395,11 @@ def run_variant(args, variant, device):
     print(f"  parameters: {res['params']['total'] / 1e6:.2f} M  "
           + "  ".join(f"{k}={v / 1e6:.2f}M" for k, v in res["params"].items() if k != "total"))
 
+    # ---- FLOPs: inference config, batch 1 ----
     d1 = build_data_dict(args, 1, istrain=0, device=device, variant=variant)
 
+    # Preflight: one forward, so a missing dependency is reported as an actionable
+    # message instead of a traceback halfway through the measurement.
     model.eval()
     try:
         with torch.no_grad():
@@ -335,6 +451,7 @@ def run_variant(args, variant, device):
         print(f"  [!] {len(uncounted)} parameterised module(s) registered ZERO FLOPs "
               f"(listed in the JSON) -- review before quoting the total")
 
+    # ---- memory ----
     res["peak_memory_mb"] = {}
     if device.type == "cuda":
         res["peak_memory_mb"]["inference_bs1"] = measure_peak_memory(
@@ -354,12 +471,14 @@ def run_variant(args, variant, device):
         res["peak_memory_mb"] = "CPU run -- GPU memory not measurable"
         print("  peak memory: skipped (no CUDA device)")
 
+    # ---- latency: batch 1, the single-query deployment scenario ----
     res["latency_bs1"] = measure_latency(model, d1, device,
                                          iters=args.latency_iters, warmup=args.warmup)
     lat = res["latency_bs1"]
     print(f"  latency (batch 1): mean {lat['mean_ms']:.2f} ms  std {lat['std_ms']:.2f}  "
           f"p50 {lat['p50_ms']:.2f}  p95 {lat['p95_ms']:.2f}")
 
+    # ---- latency at the eval script's batch size, for comparability ----
     if args.eval_batch_size and args.eval_batch_size != 1:
         d_ev = build_data_dict(args, args.eval_batch_size, istrain=0,
                                device=device, variant=variant)
@@ -376,6 +495,8 @@ def run_variant(args, variant, device):
         torch.cuda.empty_cache()
     return res
 
+
+# --------------------------------------------------------------------------------------
 
 def main():
     p = argparse.ArgumentParser(description=__doc__,
@@ -397,6 +518,7 @@ def main():
                         "(loads the GloVe pickle; slow, needs data/).")
     p.add_argument("--cpu", action="store_true", help="Force CPU (FLOPs/params only).")
 
+    # model / data configuration -- must match the training run being reported
     p.add_argument("--train_batch_size", type=int, default=8,
                    help="Batch size used by the paper's training runs "
                         "(ScanRefer_train.py debug block sets 8).")
@@ -420,7 +542,7 @@ def main():
     p.add_argument("--GF_path", type=str, default=None)
 
     args = p.parse_args()
-    args.detection = False
+    args.detection = False       # read by the dataset/model paths
     args.no_reference = False
 
     args.input_feature_dim = (int(args.use_multiview) * 128 + int(args.use_normal) * 3
@@ -434,7 +556,7 @@ def main():
     env = environment(device)
 
     print("=" * 78)
-    print("  COMPUTATIONAL COMPLEXITY  (Reviewer #2)")
+    print("  COMPUTATIONAL COMPLEXITY")
     print("=" * 78)
     for k, v in env.items():
         print(f"  {k:<26s} {v}")
@@ -494,6 +616,7 @@ def main():
     with open(out_path, "w") as f:
         json.dump(report, f, indent=2)
 
+    # ---- summary table ----
     print(f"\n{'=' * 78}\n  SUMMARY  (paste into the complexity table)\n{'=' * 78}")
     hdr = f"  {'variant':<10s} {'params(M)':>10s} {'GFLOPs':>10s} {'infer MB':>10s} {'lat mean':>10s} {'lat p95':>9s}"
     print(hdr + "\n  " + "-" * (len(hdr) - 2))

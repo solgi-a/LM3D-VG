@@ -1,3 +1,35 @@
+"""
+Parser variant E -- offline parsing with a small local LM, one cache per model.
+
+    RUNS ON: GPU strongly recommended. CPU works but takes hours on a full split.
+
+    python experiments/ablation/parsers/parse_with_smalllm.py --list-models
+    python experiments/ablation/parsers/parse_with_smalllm.py --model qwen2.5 \
+        --splits train val --device cuda
+
+``run_smalllm_parser.py`` writes every model to the same pair of folders, so parsing with
+``qwen2.5`` and then ``smollm2`` overwrites the first result and nothing records which
+model produced it. This derives both folder names from the model, so several small LMs can
+be compared against each other and against GPT-4o-mini.
+
+Parsing happens once, here; training reads the tokenized JSON this writes and never
+invokes a language model, the same arrangement as the GPT-4o-mini and LLaMA caches.
+
+For ``--model qwen2.5``::
+
+    data_parsing/smalllm_qwen2.5_parsing/parsed_result_{split}.json            (raw phrases)
+    data_parsing/smalllm_qwen2.5_parsing_tokenized/tokenized_parsed_result_{split}.json
+    data_parsing/smalllm_qwen2.5_parsing_tokenized/parse_run_summary.json
+
+Then train on it::
+
+    python scripts/ScanRefer_train.py --parsing_folder smalllm_qwen2.5_parsing_tokenized \
+        --use_cached_scenes --tag ABL-PARSER-QWEN25 --use_color --use_normal
+
+The malformed-output rate goes into the run summary. Prompt, output repair, tokenisation
+and the 7/17/75 caps are imported rather than reimplemented, so every variant goes through
+one identical path.
+"""
 
 import argparse
 import json
@@ -5,7 +37,10 @@ import os
 import sys
 import time
 from collections import defaultdict
+from tqdm import tqdm
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/ablation/parsers/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from experiments.ablation.parsers.spacy_parser import NOT_MENTIONED
@@ -19,7 +54,18 @@ from experiments.ablation.parsers.run_smalllm_parser import (
 FIELDS = ("target", "adjectives", "neighbors")
 
 
+# ======================================================================================
+# Model -> folder naming, the one thing this script adds
+# ======================================================================================
+
 def folder_slug(alias_or_id):
+    """Filesystem-safe stem for a model, stable across runs.
+
+    An alias is used as written (``qwen2.5`` -> ``qwen2.5``) so the folder matches what
+    was typed on the command line. A raw HuggingFace id is flattened
+    (``Qwen/Qwen2.5-0.5B-Instruct`` -> ``qwen_qwen2.5-0.5b-instruct``) so it cannot
+    create nested directories or collide with an alias.
+    """
     if alias_or_id in MODELS:
         return alias_or_id
     for alias, model_id in MODEL_ALIASES.items():
@@ -32,16 +78,27 @@ def folder_slug(alias_or_id):
 
 
 def folders_for(alias_or_id):
+    """(raw_dir, tokenized_dir) for a model. The tokenized name is --parsing_folder."""
     slug = folder_slug(alias_or_id)
     return (os.path.join("data_parsing", f"smalllm_{slug}_parsing"),
             os.path.join("data_parsing", f"smalllm_{slug}_parsing_tokenized"))
 
+
+# ======================================================================================
+# Per-split parsing
+# ======================================================================================
 
 def _partial_path(output_dir, split):
     return os.path.join(output_dir, f".partial_{split}.json")
 
 
 def _load_partial(path, model_id, split):
+    """Resume records for this model only.
+
+    The checkpoint carries the model id it was produced with. Without that check a
+    ``--model`` switch mid-experiment would resume one model's answers into another
+    model's cache and silently produce a blend of the two.
+    """
     if not os.path.isfile(path):
         return {}
     try:
@@ -51,6 +108,7 @@ def _load_partial(path, model_id, split):
         print(f"[{split}] ignoring unreadable checkpoint {path} ({error})")
         return {}
 
+    # Older checkpoints are a bare {key: parsed} map with no model recorded.
     if not isinstance(blob, dict) or "records" not in blob:
         print(f"[{split}] ignoring checkpoint without a model tag: {path}")
         return {}
@@ -75,6 +133,8 @@ def run_split(split, args, tokenizer, model, kind, model_id):
         records = records[: args.limit]
     print(f"[{split}] {len(records)} descriptions from {source}")
 
+    # Before the first checkpoint, not just before the final write: a run that is
+    # interrupted early must still leave a resumable file behind.
     os.makedirs(args.raw_dir, exist_ok=True)
     os.makedirs(args.output_dir, exist_ok=True)
     partial = _partial_path(args.output_dir, split)
@@ -95,7 +155,7 @@ def run_split(split, args, tokenizer, model, kind, model_id):
         texts = [(r["description"] or "").strip() for r in todo]
         stream = generate(texts, tokenizer, model, kind, args.device,
                           args.batch_size, args.max_new_tokens)
-        for i, (record, raw) in enumerate(zip(todo, stream)):
+        for i, (record, raw) in tqdm(enumerate(zip(todo, stream))):
             parsed, status = extract_fields(raw)
             stats[status] += 1
             stats["generated"] += 1
@@ -131,6 +191,7 @@ def run_split(split, args, tokenizer, model, kind, model_id):
 
     raw_path = os.path.join(args.raw_dir, f"parsed_result_{split}.json")
     tok_path = os.path.join(args.output_dir, f"tokenized_parsed_result_{split}.json")
+    # No indent: these are multi-MB files and every training run reads them.
     with open(raw_path, "w") as f:
         json.dump(plain(raw_out), f)
     with open(tok_path, "w") as f:
@@ -155,6 +216,8 @@ def run_split(split, args, tokenizer, model, kind, model_id):
     stats["raw_output"] = raw_path
     stats["tokenized_output"] = tok_path
 
+    # Re-read from disk: this validates the bytes training will actually load, not the
+    # dict that produced them.
     with open(tok_path) as f:
         written = json.load(f)
     ok, problems, checked = validate_tokenized(written, label=f"{split}:")
@@ -171,6 +234,8 @@ def run_split(split, args, tokenizer, model, kind, model_id):
 
     return stats, ok
 
+
+# ======================================================================================
 
 def main():
     parser = argparse.ArgumentParser(
@@ -207,6 +272,8 @@ def main():
             print(f"  --model {alias:10s} -> data_parsing/{os.path.basename(folders_for(alias)[1])}/")
         return 0
 
+    # Dependency check first: it costs a millisecond and saves a 1 GB download that would
+    # fail at tokenizer construction.
     if not check_requirements(args.model):
         return 1
 
@@ -215,6 +282,8 @@ def main():
     args.raw_dir = args.raw_dir or default_raw
     args.output_dir = args.output_dir or default_tok
 
+    # A GPU that reports available but cannot run a kernel is the failure mode on older
+    # cards paired with a newer torch build; catch it here rather than 40 minutes in.
     if args.device == "cuda":
         usable, detail = cuda_is_usable()
         if usable:
@@ -270,7 +339,7 @@ def main():
 
     folder = os.path.basename(args.output_dir)
     print("All splits parsed and schema-validated.")
-    print("Report the malformed rate above in the manuscript (Reviewer #4 comment 3).")
+    print("The malformed rate above is recorded in parse_run_summary.json.")
     print("\nScore this parser against ScanRefer's object_name:")
     print(f"    python experiments/ablation/parsers/eval_parser_target_accuracy.py "
           f"--splits train \\\n        --parsed-dir {args.output_dir} --tag {folder_slug(args.model)}")

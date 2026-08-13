@@ -1,3 +1,35 @@
+"""
+Shared helpers for the post-hoc analyses.
+
+    RUNS ON: CPU. Imported by the other analysis/ scripts; not a command-line tool.
+
+The single most important thing this module encodes is the format of
+``outputs/<run>/predictions.p``, because every analysis is a join against it.
+
+The predictions file
+--------------------
+``scripts/ScanRefer_eval.py`` (lines 251-274) builds and pickles::
+
+    predictions[scene_id][object_id][ann_id] = {
+        "pred_bbox": ndarray (8, 3),   # predicted box corners
+        "gt_bbox":   ndarray (8, 3),   # ground-truth box corners
+        "iou":       float,            # 3D IoU of the two
+    }
+
+``scene_id`` is like ``scene0011_00``; ``object_id`` and ``ann_id`` are **strings**. The
+same three keys index ScanRefer's own JSON records, so the join is exact and total -- all
+9,508 val annotations are present. Accuracy at a threshold is
+``mean(iou >= threshold)``, which reproduces ``iou_rate_0.25`` / ``iou_rate_0.5``.
+
+To produce this file for a run that does not have one::
+
+    python scripts/ScanRefer_eval.py --folder <run> --reference --force \\
+        --use_color --use_normal --lang_num_max 1
+
+To plug in an external baseline (3DVG-Trans and friends), write a pickle with exactly the
+structure above. Only ``iou`` is required by most analyses; ``pred_bbox`` / ``gt_bbox``
+are needed additionally by ``failure_cases.py``.
+"""
 
 import json
 import math
@@ -6,12 +38,20 @@ import pickle
 
 import numpy as np
 
+#: experiments/analysis/<this file> -> repo root is 3 levels up. Resolved from the file, not the
+#: cwd, so every script works when invoked as `python experiments/analysis/<name>.py` from anywhere.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+#: Thresholds the paper reports.
 THRESHOLDS = (0.25, 0.5)
 
 
+# ======================================================================================
+# Loading
+# ======================================================================================
+
 def load_scanrefer(split="val", data_root="data"):
+    """ScanRefer annotations for one split, as the list of raw records."""
     for candidate in (os.path.join(data_root, f"ScanRefer_filtered_{split}.json"),
                       os.path.join(REPO_ROOT, data_root, f"ScanRefer_filtered_{split}.json")):
         if os.path.isfile(candidate):
@@ -23,6 +63,7 @@ def load_scanrefer(split="val", data_root="data"):
 
 
 def load_predictions(path):
+    """Flatten predictions.p to {(scene_id, object_id, ann_id): record}."""
     if not os.path.isfile(path):
         raise FileNotFoundError(
             f"predictions file not found: {path}\n"
@@ -41,6 +82,7 @@ def load_predictions(path):
 
 
 def load_parse_cache(folder, split="val", parsing_root="data_parsing"):
+    """A tokenized parse cache as {scene_id: {object_id: {ann_id: {field: [tok]}}}}."""
     for base in (parsing_root, os.path.join(REPO_ROOT, parsing_root)):
         path = os.path.join(base, folder, f"tokenized_parsed_result_{split}.json")
         if os.path.isfile(path):
@@ -51,6 +93,7 @@ def load_parse_cache(folder, split="val", parsing_root="data_parsing"):
 
 
 def parse_for(cache, scene_id, object_id, ann_id):
+    """One annotation's parse, or None when the cache does not cover it."""
     try:
         return cache[str(scene_id)][str(object_id)][str(ann_id)]
     except (KeyError, TypeError):
@@ -58,6 +101,12 @@ def parse_for(cache, scene_id, object_id, ann_id):
 
 
 def join(predictions, records):
+    """Merge ScanRefer records with their prediction. Returns (rows, num_missing).
+
+    Each row carries the ScanRefer fields plus ``iou`` and the raw prediction record.
+    Records with no prediction are skipped and counted -- silently dropping them would
+    quietly change the denominator of every accuracy in the report.
+    """
     rows, missing = [], 0
     for record in records:
         key = (str(record["scene_id"]), str(record["object_id"]), str(record["ann_id"]))
@@ -73,6 +122,28 @@ def join(predictions, records):
 
 
 def unique_multiple_lookup(records, scannet_meta=None):
+    """ScanRefer's Unique/Multiple split: {(scene, object, ann): 0 unique | 1 multiple}.
+
+    A **faithful port** of ``_get_raw2label`` + ``_get_unique_multiple_lookup``
+    (``lib/dataset.py:494-566``), reproduced here rather than imported because importing
+    ``lib.dataset`` pulls in torch, h5py and the whole training stack, and this package is
+    deliberately model-free.
+
+    Two details make a naive reimplementation wrong, and both were verified against a real
+    run's ``scores.p``:
+
+    1. The class compared is **not** the raw ``object_name`` string but its NYU40 mapping
+       through ``scannetv2-labels.combined.tsv``, with ``others`` as the fallback bucket
+       and ``shower_curtain -> 13`` hardcoded. Counting raw strings instead gives
+       3759/5749 rather than the correct **1845/7663**.
+    2. Each *object* contributes its label to the scene once, not each annotation.
+
+    Why not just read ``scores.p["masks"]``, which holds the authoritative mask? Because
+    those arrays are in **dataloader order** (scene-grouped), not ScanRefer JSON order, and
+    ``scan_idx`` is not saved alongside them — so they cannot be joined back to a
+    ``(scene, object, ann)`` key. Verified: the two orderings hold identical multisets of
+    IoUs but differ elementwise.
+    """
     import numpy as _np
 
     from data.scannet.model_util_scannet import ScannetDatasetConfig
@@ -118,16 +189,27 @@ def unique_multiple_lookup(records, scannet_meta=None):
 
 
 def mcnemar(a_hits, b_hits):
+    """Paired binary comparison of two models on the same items.
+
+    Returns (a_only, b_only, chi2, p). The correct test when both models are evaluated on
+    an identical annotation set: it conditions on the discordant pairs and ignores the
+    items both got right or both got wrong, which an unpaired proportion test cannot do.
+    """
     a_only = sum(1 for a, b in zip(a_hits, b_hits) if a and not b)
     b_only = sum(1 for a, b in zip(a_hits, b_hits) if b and not a)
     n = a_only + b_only
     if n == 0:
         return a_only, b_only, float("nan"), float("nan")
-    chi2 = (abs(a_only - b_only) - 1) ** 2 / n
+    chi2 = (abs(a_only - b_only) - 1) ** 2 / n          # continuity-corrected
     return a_only, b_only, chi2, math.erfc(math.sqrt(chi2 / 2.0))
 
 
 def bootstrap_ci(values_fn, n_items, num_resamples=2000, seed=42, alpha=0.05):
+    """Percentile bootstrap CI for a statistic computed from resampled item indices.
+
+    ``values_fn(indices) -> float`` is called with an array of item indices sampled with
+    replacement. Returns (point_estimate, low, high).
+    """
     import numpy as _np
 
     rng = _np.random.default_rng(seed)
@@ -140,14 +222,17 @@ def bootstrap_ci(values_fn, n_items, num_resamples=2000, seed=42, alpha=0.05):
 
 
 def parse_predictions_arg(value):
+    """``NAME=PATH`` -> (name, path). A bare path gets its run folder as the name."""
     if "=" in value:
         name, path = value.split("=", 1)
         return name.strip(), path.strip()
+    # outputs/<run>/predictions.p -> "<run>"
     parent = os.path.basename(os.path.dirname(os.path.abspath(value)))
     return (parent or "model"), value
 
 
 def find_default_predictions(output_root="outputs"):
+    """Every outputs/*/predictions.p, newest first. Convenience for the default arg."""
     root = output_root if os.path.isdir(output_root) else os.path.join(REPO_ROOT, output_root)
     if not os.path.isdir(root):
         return []
@@ -160,7 +245,12 @@ def find_default_predictions(output_root="outputs"):
     return found
 
 
+# ======================================================================================
+# Statistics
+# ======================================================================================
+
 def accuracy(ious, threshold):
+    """Acc@threshold as a fraction. Empty input -> 0.0."""
     ious = np.asarray(ious, dtype=float)
     if ious.size == 0:
         return 0.0
@@ -168,6 +258,11 @@ def accuracy(ious, threshold):
 
 
 def wilson_ci(successes, total, z=1.96):
+    """Wilson score interval for a proportion.
+
+    Wilson rather than the normal approximation because several bins here are small and
+    some proportions sit near 0 or 1, where the normal interval leaves [0, 1] entirely.
+    """
     if total == 0:
         return (0.0, 0.0)
     p = successes / total
@@ -178,6 +273,7 @@ def wilson_ci(successes, total, z=1.96):
 
 
 def two_proportion_z(k1, n1, k2, n2):
+    """Two-sided two-proportion z-test. Returns (diff, z, p); (0,nan,nan) if degenerate."""
     if n1 == 0 or n2 == 0:
         return (0.0, float("nan"), float("nan"))
     p1, p2 = k1 / n1, k2 / n2
@@ -191,6 +287,7 @@ def two_proportion_z(k1, n1, k2, n2):
 
 
 def spearman(x, y):
+    """Spearman rank correlation, (rho, p). Falls back to rho-only without scipy."""
     if len(x) < 3:
         return (float("nan"), float("nan"))
     try:
@@ -224,6 +321,7 @@ def _rank(values):
 
 
 def quantile_edges(values, num_bins):
+    """Interior quantile cut points, de-duplicated. Returns num_bins-1 edges at most."""
     values = np.asarray(values, dtype=float)
     if values.size == 0:
         return []
@@ -235,6 +333,10 @@ def quantile_edges(values, num_bins):
             unique.append(edge)
     return unique
 
+
+# ======================================================================================
+# Output
+# ======================================================================================
 
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
@@ -259,6 +361,7 @@ def _jsonable(obj):
 
 
 def md_table(headers, rows):
+    """A GitHub-flavoured markdown table, columns padded to a readable width."""
     cells = [[str(h) for h in headers]] + [[str(c) for c in row] for row in rows]
     widths = [max(len(row[i]) for row in cells) for i in range(len(headers))]
     lines = ["| " + " | ".join(h.ljust(widths[i]) for i, h in enumerate(cells[0])) + " |",
@@ -273,16 +376,31 @@ def pct(value, digits=2):
     return f"{100.0 * value:.{digits}f}"
 
 
+# ======================================================================================
+# Geometry -- box corners to a viewable PLY
+# ======================================================================================
+
+#: Corner order produced by utils/box_util.get_3d_box: 0-3 are the top face
+#: (z = +h/2) and 4-7 the bottom face, each traversed in the same rotational order.
+#: These are the 12 edges of the resulting box.
 _BOX_EDGES = ((0, 1), (1, 2), (2, 3), (3, 0),
               (4, 5), (5, 6), (6, 7), (7, 4),
               (0, 4), (1, 5), (2, 6), (3, 7))
 
+#: Triangles of a unit prism's 6 faces, indexed into the 8 corners this module emits
+#: per edge (0-3 the start cap, 4-7 the end cap).
 _PRISM_FACES = ((0, 1, 2), (0, 2, 3), (4, 6, 5), (4, 7, 6),
                 (0, 4, 5), (0, 5, 1), (1, 5, 6), (1, 6, 2),
                 (2, 6, 7), (2, 7, 3), (3, 7, 4), (3, 4, 0))
 
 
 def write_bbox_ply(corners, path, color=(255, 0, 0), radius=0.02):
+    """Write an (8,3) box as a wireframe PLY: each edge becomes a thin square prism.
+
+    A solid box would occlude the point cloud it is meant to annotate, and PLY's ``edge``
+    element is not portably supported by viewers. Thin prisms render correctly in MeshLab,
+    CloudCompare and Open3D alike, which is what the qualitative figures need.
+    """
     corners = np.asarray(corners, dtype=float).reshape(8, 3)
     vertices, faces = [], []
 
@@ -294,6 +412,7 @@ def write_bbox_ply(corners, path, color=(255, 0, 0), radius=0.02):
             continue
         axis = axis / length
 
+        # Any two unit vectors orthogonal to the edge give the prism's cross-section.
         reference = np.array([0.0, 0.0, 1.0])
         if abs(float(np.dot(reference, axis))) > 0.9:
             reference = np.array([1.0, 0.0, 0.0])
@@ -326,6 +445,7 @@ def write_bbox_ply(corners, path, color=(255, 0, 0), radius=0.02):
 
 
 def box_volume(corners):
+    """Axis-aligned volume of an (8,3) box. Used as a proxy for object size."""
     corners = np.asarray(corners, dtype=float).reshape(8, 3)
     extent = corners.max(axis=0) - corners.min(axis=0)
     return float(np.prod(extent))

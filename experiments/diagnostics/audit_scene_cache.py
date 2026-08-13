@@ -1,3 +1,29 @@
+"""
+Is the scene cache complete, well-formed, and good enough to ground on? No model needed.
+
+    RUNS ON: CPU. Under a minute for all 141 val scenes. No GPU, no checkpoint -- it only
+    reads .p files and does box arithmetic.
+
+    python experiments/diagnostics/audit_scene_cache.py
+    python experiments/diagnostics/audit_scene_cache.py --split train --limit 50
+
+``validate_scene_cache.py`` is the strict test but needs a GPU, since ``lib/loss_helper.py``
+calls ``.cuda()`` in 27 places. This answers a weaker question with no model at all:
+
+1. **Integrity.** Every scene the split needs is present; every file carries the keys
+   ``meta.json`` promises, with the recorded shapes and dtypes, and no NaN or Inf.
+
+2. **Recall ceiling.** The fusion network can only return one of the 256 cached proposals,
+   so ``max_i IoU(proposal_i, gt)`` bounds grounding accuracy for that annotation. Over the
+   split that gives the best score the cache could support -- a ceiling below the reported
+   accuracy means the cache is wrong.
+
+The cache uses a deterministic per-scene point subsample while the original end-to-end
+evaluation subsampled at random, so the two see slightly different point clouds and an
+annotation's achieved IoU is not required to sit below its cached ceiling. How often it
+does not comes out as a consistency statistic rather than pass/fail: a few percent is
+expected from resampling, a large fraction means different weights or a different detector.
+"""
 
 import argparse
 import json
@@ -22,6 +48,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 
 def aabb_iou(a, b):
+    """3-D IoU of two axis-aligned boxes given as (8, 3) corner arrays.
+
+    ScanRefer's boxes are axis aligned, so the extent alone defines them and the IoU is
+    exact -- no convex-hull intersection needed.
+    """
     a_low, a_high = a.min(axis=0), a.max(axis=0)
     b_low, b_high = b.min(axis=0), b.max(axis=0)
     overlap = np.minimum(a_high, b_high) - np.maximum(a_low, b_low)
@@ -35,8 +66,9 @@ def aabb_iou(a, b):
 
 
 def batch_max_iou(proposals, gt):
-    p_low, p_high = proposals.min(axis=1), proposals.max(axis=1)
-    g_low, g_high = gt.min(axis=0), gt.max(axis=0)
+    """Best IoU between one gt box and all (N, 8, 3) proposals, vectorised."""
+    p_low, p_high = proposals.min(axis=1), proposals.max(axis=1)      # (N, 3)
+    g_low, g_high = gt.min(axis=0), gt.max(axis=0)                    # (3,)
 
     overlap = np.minimum(p_high, g_high) - np.maximum(p_low, g_low)
     overlap = np.clip(overlap, 0.0, None)
@@ -76,6 +108,7 @@ def main():
     print(f"Scene-cache audit -- split '{args.split}', root '{args.root}'")
     print("=" * 84)
 
+    # ---- meta ------------------------------------------------------------------------
     meta_path = os.path.join(root, "meta.json")
     if not os.path.isfile(meta_path):
         print(f"\nno cache found: {os.path.relpath(meta_path, REPO)}")
@@ -94,6 +127,7 @@ def main():
           f"complete={split_meta.get('complete')}")
     print(f"[meta] {len(expected_keys)} cached keys")
 
+    # ---- integrity -------------------------------------------------------------------
     records = load_scanrefer(args.split, args.data_root)
     scene_ids = sorted({r["scene_id"] for r in records})
     if args.limit:
@@ -135,6 +169,7 @@ def main():
 
     integrity_ok = not (missing_files or missing_keys or bad_values)
 
+    # ---- recall ceiling ---------------------------------------------------------------
     predictions_path = os.path.join(REPO, args.predictions)
     if not os.path.isfile(predictions_path):
         print(f"\n[2] SKIPPED -- {args.predictions} not found, so there are no gt boxes "
@@ -144,6 +179,8 @@ def main():
     predictions = load_predictions(predictions_path)
     print(f"\n[2] Recall ceiling from the cached proposals\n" + "-" * 84)
 
+    # load_predictions returns a flat dict keyed by (scene_id, object_id, ann_id); join()
+    # is the one place that key convention is written down, so reuse it.
     joined, no_prediction = join(predictions, records)
     if no_prediction:
         print(f"  {no_prediction} annotation(s) have no prediction and are excluded")
@@ -183,6 +220,7 @@ def main():
     print(f"  achieved > ceiling       : {violations} ({100 * violations / rows:.2f}%)"
           f"   <- resampling noise; large values mean a different checkpoint")
 
+    # ---- verdict ----------------------------------------------------------------------
     print("\n" + "=" * 84)
     print("VERDICT")
     print("=" * 84)

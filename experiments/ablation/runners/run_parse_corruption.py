@@ -1,3 +1,35 @@
+"""
+Parse-corruption sweep: evaluate one trained checkpoint against deliberately broken parses.
+
+    RUNS ON: GPU. Evaluation only -- no training. One val pass per level, so roughly 4x a
+             single evaluation (baseline + three corruption levels).
+
+    python experiments/ablation/runners/run_parse_corruption.py
+
+The sample, model and weights are fixed and only the parse changes, so the effect is
+causal. The runner:
+
+1. Generates the corrupted parse caches if missing (CPU, seconds).
+2. Runs ``ScanRefer_eval.py --force`` once per level, starting with the uncorrupted parse
+   for a paired baseline.
+3. Archives each level's output immediately -- ``ScanRefer_eval.py`` always writes to the
+   same ``predictions.p`` / ``scores.p``, so without this each level would overwrite the
+   previous one.
+
+Result layout, which experiments/analysis/parse_error_propagation.py expects::
+
+    outputs/<FOLDER>/corruption/
+        baseline/{predictions.p, scores.p, eval_stdout.txt}
+        all_10/{predictions.p, scores.p, corruption_manifest.json, eval_stdout.txt}
+        all_25/...
+        all_50/...
+        run_summary.json
+
+Any pre-existing ``predictions.p`` is backed up and restored at the end. Then aggregate
+on CPU:
+
+    python experiments/analysis/parse_error_propagation.py --run-dir outputs/<FOLDER>/corruption
+"""
 
 import json
 import os
@@ -6,22 +38,30 @@ import subprocess
 import sys
 import time
 
+# ======================================================================================
+# CONFIG -- edit here
+# ======================================================================================
 
-RUN = True
-FOLDER = "2024-12-18_20-40-38_3DVG-FIXED"
+RUN = True                                     # master switch for this experiment
+FOLDER = "2024-12-18_20-40-38_3DVG-FIXED"      # trained run under outputs/ to evaluate
+#: Which MatchModule to build. FOLDER above was trained with the older fusion
+#: head, so "original" is required -- with "current" the eval would leave 178
+#: tensors randomly initialised and ablation_hooks now refuses outright.
 FUSION_VARIANT = "original"
-SOURCE_PARSING = "final_parsing_tokenized"
-RATES = [0.10, 0.25, 0.50]
-MODE = "all"
+SOURCE_PARSING = "final_parsing_tokenized"     # the clean parse the model was trained on
+RATES = [0.10, 0.25, 0.50]                     # corruption levels
+MODE = "all"                                   # swap | drop | shuffle | all
 SEED = 42
 SPLIT = "val"
 BATCH_SIZE = 8
-LANG_NUM_MAX = 1
-EXTRA_ARGS = ["--use_color", "--use_normal"]
-RUN_BASELINE = True
-GENERATE_CACHES = True
+LANG_NUM_MAX = 1                               # eval uses one description per sample
+EXTRA_ARGS = ["--use_color", "--use_normal"]   # must match the trained configuration
+RUN_BASELINE = True                            # evaluate the clean parse first (paired)
+GENERATE_CACHES = True                         # build missing corrupted caches
 
+# ======================================================================================
 
+# experiments/ablation/runners/<this file> -> repo root is 4 levels up.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 OUTPUT_DIR = os.path.join(REPO_ROOT, "outputs", FOLDER)
 ARCHIVE_ROOT = os.path.join(OUTPUT_DIR, "corruption")
@@ -65,6 +105,7 @@ def eval_command(parsing_folder):
 
 
 def archive(level_name, parsing_folder):
+    """Move this level's eval output out of the way before the next level overwrites it."""
     destination = os.path.join(ARCHIVE_ROOT, level_name)
     os.makedirs(destination, exist_ok=True)
 
@@ -111,6 +152,11 @@ def run_level(level_name, parsing_folder):
 
 
 def _cli_guard():
+    """These runners are configured by the CONFIG block above, not by command-line flags.
+
+    Without this, `--help` or a mistyped flag would be silently ignored and a long run
+    would start anyway. Any argument prints the configuration and exits instead.
+    """
     if len(sys.argv) <= 1:
         return False
     print(__doc__)
@@ -139,6 +185,7 @@ def main():
 
     os.makedirs(ARCHIVE_ROOT, exist_ok=True)
 
+    # Preserve any existing evaluation output; this sweep overwrites it repeatedly.
     backups = []
     for artifact in ARTIFACTS:
         source = os.path.join(OUTPUT_DIR, artifact)

@@ -1,3 +1,46 @@
+"""
+Deliberately corrupt a parse cache, to measure whether parse errors propagate.
+
+    RUNS ON: CPU. Seconds. No model, no GPU, no network.
+
+    python experiments/ablation/parsers/corrupt_parse_cache.py --splits val --rates 0.10 0.25 0.50 --mode all
+
+Needs no training -- only re-evaluation of an existing checkpoint.
+
+What gets corrupted
+-------------------
+A fixed fraction of annotations is selected (seeded, reproducible) and rewritten:
+
+``swap``      ``target`` is replaced with a different annotation's target -- the wrong
+              object class, the most consequential parser failure.
+``drop``      all three fields become ``["not", "mentioned"]`` -- a parser that produced
+              nothing usable.
+``shuffle``   ``neighbors`` is replaced with a different annotation's neighbors -- a
+              hallucinated spatial context, the failure mode specific to the adjacency
+              claim.
+``all``       one of the three above per selected annotation, drawn uniformly. The
+              default: a mixed error profile is closer to what a real parser does.
+
+Output
+------
+One directory per (mode, rate), named ``<source>_corrupt_<mode>_<pct>``::
+
+    data_parsing/final_parsing_tokenized_corrupt_all_25/
+        tokenized_parsed_result_val.json
+        corruption_manifest.json
+
+The manifest records which (scene_id, object_id, ann_id) were corrupted and how, which lets
+``parse_error_propagation.py`` compare the corrupted subset against the untouched one at
+the same rate. The global accuracy curve mixes the two and dilutes the effect by (1 - rate).
+
+Corrupted output goes through the same validator as every other cache
+(``tokenize_parse.py``): keys present, no empty field, caps 7/17/75 respected. A donor is
+redrawn until it differs from the original, so the reported rate is the effective one.
+
+Next step (GPU)::
+
+    python experiments/ablation/runners/run_parse_corruption.py
+"""
 
 import argparse
 import json
@@ -5,6 +48,8 @@ import os
 import random
 import sys
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/ablation/parsers/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from experiments.ablation.parsers.tokenize_parse import (
@@ -16,10 +61,12 @@ from experiments.ablation.parsers.tokenize_parse import (
 FIELDS = ("target", "adjectives", "neighbors")
 MODES = ("swap", "drop", "shuffle", "all")
 
+#: How many times to redraw a donor before giving up and leaving the entry unchanged.
 _MAX_DONOR_TRIES = 12
 
 
 def flat_keys(data):
+    """Sorted [(scene_id, object_id, ann_id)] so sampling is reproducible across runs."""
     keys = []
     for scene_id, objects in data.items():
         for object_id, anns in objects.items():
@@ -35,6 +82,7 @@ def _get(data, key):
 
 
 def _draw_donor(data, keys, key, field, rng):
+    """A different annotation's value for ``field``, guaranteed to differ from key's."""
     original = _get(data, key)[field]
     for _ in range(_MAX_DONOR_TRIES):
         donor_key = keys[rng.randrange(len(keys))]
@@ -47,11 +95,14 @@ def _draw_donor(data, keys, key, field, rng):
 
 
 def corrupt(data, rate, mode, seed):
+    """Return (corrupted_copy, manifest_entries, stats). ``data`` is not modified."""
     rng = random.Random(seed)
     keys = flat_keys(data)
     num_target = int(round(rate * len(keys)))
     selected = rng.sample(keys, num_target) if num_target else []
 
+    # Deep-ish copy: the field lists are replaced wholesale, never mutated in place, so
+    # copying one level below the annotation dict is sufficient and much cheaper.
     out = {
         scene_id: {
             object_id: {ann_id: {f: list(parsed[f]) for f in FIELDS}
@@ -83,6 +134,7 @@ def corrupt(data, rate, mode, seed):
             entry[field] = clip_tokens(list(donor), field)
 
         if all(entry[f] == before[f] for f in FIELDS):
+            # Can happen for `drop` when the parse was already all "not mentioned".
             stats["no_op"] += 1
             continue
 
@@ -150,6 +202,7 @@ def main():
                         for s, objs in data.items()}
                 data = {s: o for s, o in data.items() if o}
 
+            # Per-split seed offset, so val and train are not corrupted in lockstep.
             corrupted, manifest, stats = corrupt(
                 data, rate, args.mode, args.seed + hash(split) % 1000)
 

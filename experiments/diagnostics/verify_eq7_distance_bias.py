@@ -1,3 +1,42 @@
+"""
+Eq. 7 -- what the distance bias actually does to attention.
+
+    RUNS ON: CPU. ~20 seconds. No GPU, no checkpoint, no dataset.
+
+    python experiments/diagnostics/verify_eq7_distance_bias.py
+
+Read as printed, Eq. 7 adds the distance matrix to the attention logits, which would give
+farther objects more weight -- the opposite of what the text describes. This measures the
+behaviour instead of arguing about the notation: it calls ``MatchModule.dist_cal`` as an
+unbound method on the real class and the real ``ScaledDotProductAttention``, feeds them
+proposals at known distances, and reports which way attention leans. Nothing is
+reimplemented.
+
+What gets checked
+-----------------
+1. **Which branch runs.** ``use_dist_weight_matrix`` is hard-coded True and ``dist_cal``
+   returns ``way='add'``, so the ``att + w`` branch of
+   ``models/transformer/attention.py`` is live.
+
+2. **Source drift.** The ``dist_cal`` body is duplicated verbatim inside
+   ``MatchModule.forward``; editing one copy and not the other makes the two halves
+   disagree silently. Compared by AST.
+
+3. **Magnitude.** The four channels of ``dist_weights`` are on very different scales and
+   one is small enough to be inert. Measured against the real logit spread.
+
+4. **Direction.** Per head, rank correlation between attention weight and distance,
+   against a no-bias control sharing the same random projections.
+
+5. **The counterfactual.** The same measurement with ``+dist`` for ``-dist``, i.e. the
+   equation as printed. If that flips the correlation, the code and the text disagree and
+   the text is what is wrong.
+
+6. **Invalid-proposal masking.** ``ScaledDotProductAttention`` applies the removal term
+   through ``attention_mask``; this checks whether ``MatchModule`` ever passes one.
+
+A verdict block at the end states which case holds.
+"""
 
 import ast
 import os
@@ -15,9 +54,13 @@ MATCH_MODULE_SRC = os.path.join(REPO, "models", "match_module.py")
 NUM_PROPOSALS = 256
 HIDDEN_SIZE = 128
 NUM_HEADS = 4
-ROOM = (7.0, 7.0, 2.6)
+ROOM = (7.0, 7.0, 2.6)      # a plausible ScanNet room extent, in metres
 SEED = 0
 
+
+# ======================================================================================
+# 1. source-level facts
+# ======================================================================================
 
 def _function_node(tree, class_name, func_name):
     for node in ast.walk(tree):
@@ -29,6 +72,7 @@ def _function_node(tree, class_name, func_name):
 
 
 def _assign_targets(node):
+    """Map ``name -> normalised source`` for every assignment in a function body."""
     found = {}
     for stmt in ast.walk(node):
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
@@ -39,6 +83,7 @@ def _assign_targets(node):
 
 
 def check_source_drift():
+    """The dist_cal body is duplicated inside forward(); confirm the copies agree."""
     with open(MATCH_MODULE_SRC) as handle:
         tree = ast.parse(handle.read())
 
@@ -55,6 +100,7 @@ def check_source_drift():
         if name not in a or name not in b:
             disagreements.append(f"{name}: present in only one copy")
             continue
+        # forward() may assign a name more than once; every dist_cal form must appear.
         for expression in a[name]:
             if expression not in b[name]:
                 disagreements.append(f"{name}: dist_cal form absent from forward()")
@@ -73,6 +119,7 @@ def check_source_drift():
 
 
 def check_attention_mask_usage():
+    """Does MatchModule ever pass attention_mask= to a self-attention call?"""
     with open(MATCH_MODULE_SRC) as handle:
         tree = ast.parse(handle.read())
 
@@ -88,12 +135,18 @@ def check_attention_mask_usage():
     return total, masked
 
 
+# ======================================================================================
+# 2. the real bias tensor
+# ======================================================================================
+
 def real_dist_weights(centers):
+    """Call the repository's own dist_cal. Unbound: it never touches ``self``."""
     from models.match_module import MatchModule
     return MatchModule.dist_cal(None, centers)
 
 
 def describe_channels(dist_weights, dist):
+    """Per-channel magnitude report. dist_weights is (B, 4, N, N)."""
     labels = [
         "0  normalised 1/(d+1e-2)   proximity, row-normalised",
         "1  -d                      raw negative distance, metres",
@@ -108,11 +161,21 @@ def describe_channels(dist_weights, dist):
     return rows
 
 
+# ======================================================================================
+# 3. attention measurement
+# ======================================================================================
+
 def spearman_rows(attention, distance):
+    """Mean Spearman rho between each query's attention row and its distance row.
+
+    Averaging over queries rather than pooling all pairs keeps every correlation
+    inside a single softmax, which is the unit that actually competes for mass.
+    """
     def rank(values):
         order = np.argsort(values, kind="mergesort")
         ranks = np.empty(len(values), dtype=float)
         ranks[order] = np.arange(len(values), dtype=float)
+        # average ties
         sorted_values = values[order]
         start = 0
         for index in range(1, len(values) + 1):
@@ -134,6 +197,11 @@ def spearman_rows(attention, distance):
 
 
 def quartile_ratio(attention, distance):
+    """Mean attention on the nearest quarter of keys divided by the farthest quarter.
+
+    >1 means near objects are favoured. This is the number to quote in the paper --
+    it is interpretable in a way a rank correlation is not.
+    """
     near, far = [], []
     for row in range(attention.shape[0]):
         order = np.argsort(distance[row])
@@ -145,6 +213,12 @@ def quartile_ratio(attention, distance):
 
 
 def attention_maps(features, dist_weights, way, attention_module):
+    """Run the repository's attention and return (B, h, N, N) post-softmax weights.
+
+    ScaledDotProductAttention returns the *output* of attention, not the weights, so
+    the projections are reused here and the two lines that combine logits with the
+    bias are reproduced exactly as they appear in attention.py.
+    """
     batch, length = features.shape[:2]
     module = attention_module
     q = module.fc_q(features).view(batch, length, module.h, module.d_k).permute(0, 2, 1, 3)
@@ -173,6 +247,7 @@ def main():
     print("Eq. 7 -- distance bias in the fusion self-attention")
     print("=" * 86)
 
+    # ---- 1. source facts -------------------------------------------------------------
     print("\n[1] Source-level facts\n" + "-" * 86)
     check_source_drift()
 
@@ -185,6 +260,7 @@ def main():
         print("     describes masking invalid proposals inside Eq. 7, it describes")
         print("     something the code does not do.")
 
+    # ---- 2. the real bias ------------------------------------------------------------
     print("\n[2] The bias tensor, from MatchModule.dist_cal\n" + "-" * 86)
     centers = torch.rand(1, NUM_PROPOSALS, 3) * torch.tensor(ROOM)
     dist_weights, way = real_dist_weights(centers)
@@ -200,6 +276,7 @@ def main():
     for label, low, high, mean, std in describe_channels(dist_weights, pairwise):
         print(f"    {label:<44} {low:8.4f}  {high:8.4f}  {mean:8.4f}  {std:8.4f}")
 
+    # ---- 3. magnitude against the logits it is added to -------------------------------
     from models.transformer.attention import ScaledDotProductAttention
 
     attention_module = ScaledDotProductAttention(
@@ -226,6 +303,7 @@ def main():
         print(f"  head {channel}: bias std {bias_std:8.4f}  "
               f"= {share:7.3f} x logit std   {note}")
 
+    # ---- 4. direction, per head -------------------------------------------------------
     print("\n[4] Does attention fall off with distance?\n" + "-" * 86)
     print("  rho  = mean per-query Spearman(attention, distance); negative = near wins")
     print("  near/far = mean attention on nearest quartile / farthest quartile\n")
@@ -246,9 +324,10 @@ def main():
         print(f"    {head}   |  {rho_b:+.4f}   {ratio_b:8.3f}x   |  "
               f"{rho_u:+.4f}   {ratio_u:8.3f}x")
 
+    # ---- 5. the counterfactual: Eq. 7 as printed --------------------------------------
     print("\n[5] Counterfactual -- +d instead of -d (Eq. 7 as printed)\n" + "-" * 86)
     flipped = dist_weights.clone()
-    flipped[:, 1] = -flipped[:, 1]
+    flipped[:, 1] = -flipped[:, 1]          # -d  ->  +d
     counterfactual, _ = attention_maps(features, flipped, way, attention_module)
 
     head1_real = spearman_rows(biased[0, 1].numpy(), pairwise)
@@ -260,6 +339,7 @@ def main():
     print(f"  head 1 as printed     (+d) : rho {head1_flipped:+.4f}   "
           f"near/far {ratio_flipped:10.3f}x")
 
+    # ---- 6. verdict -------------------------------------------------------------------
     print("\n" + "=" * 86)
     print("VERDICT")
     print("=" * 86)
@@ -276,21 +356,16 @@ def main():
             f"{max(per_head[h]['ratio'] for h in near_favoured):.1f}x more attention on "
             f"the nearest quarter of proposals than the farthest quarter, and the "
             f"control run without the bias shows no such preference "
-            f"({per_head[near_favoured[0]]['ratio_control']:.2f}x). The reviewers' "
-            f"conclusion -- that farther objects gain weight -- does NOT hold for the "
-            f"implementation.")
+            f"({per_head[near_favoured[0]]['ratio_control']:.2f}x). Reading Eq. 7 as "
+            f"giving farther objects more weight does NOT hold for the implementation.")
         lines.append(
-            "So this is a writing defect, not a modelling defect. Eq. 7 in the paper "
-            "must be corrected to show the negative sign that the code applies "
-            "(`att - d`, not `att + d`). Do not change match_module.py; change the "
-            "equation, and say in the response letter that the implementation was "
-            "always the intended one and the typeset equation dropped the sign.")
+            "So the discrepancy is in the printed equation, not the model: the code "
+            "applies `att - d` while Eq. 7 shows `att + d`.")
     else:
         lines.append(
-            "The code favours FAR objects, exactly as the reviewers read it. This is a "
-            "real bug, not a typesetting slip. Every number in the paper was produced "
-            "by this code, so the equation cannot simply be corrected -- report the "
-            "behaviour honestly and decide whether to retrain.")
+            "The code favours FAR objects, matching Eq. 7 as printed. This is a real "
+            "bug rather than a typesetting slip: every number in the paper was produced "
+            "by this code.")
 
     if inert:
         lines.append(
@@ -317,6 +392,7 @@ def main():
     for number, line in enumerate(lines, 1):
         print(f"\n{number}. " + textwrap.fill(line, 84, subsequent_indent="   "))
 
+    # ---- 7. figure --------------------------------------------------------------------
     out_dir = os.path.join(REPO, "outputs", "diagnostics")
     os.makedirs(out_dir, exist_ok=True)
     try:
@@ -363,7 +439,7 @@ def main():
         figure.savefig(figure_path, dpi=170)
         plt.close(figure)
         print(f"\nwrote {os.path.relpath(figure_path, REPO)}")
-    except Exception as error:
+    except Exception as error:                      # plotting is a convenience, not the result
         print(f"\n(figure skipped: {error})")
 
     report = {

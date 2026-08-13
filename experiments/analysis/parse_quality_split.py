@@ -1,3 +1,30 @@
+"""
+Grounding accuracy on the correctly parsed subset vs the incorrectly parsed one.
+
+    RUNS ON: CPU. A few seconds. No GPU, no model, no re-evaluation.
+
+    python experiments/analysis/parse_quality_split.py \
+        --predictions outputs/2024-12-18_20-40-38_3DVG-FIXED/predictions.p \
+        --parse gpt4o-mini=final_parsing_tokenized \
+        --parse spacy=spacy_parsing_tokenized
+
+ScanRefer's ``object_name`` is free ground truth for the target slot: a parse whose
+``target`` matches it is correct. That labels all 9,508 val annotations at no cost.
+
+The raw comparison is confounded -- descriptions the parser gets wrong skew towards rare
+classes and unusual phrasing, which are harder to ground regardless of the parse. So two
+numbers come out:
+
+**raw** the plain difference between the subsets.
+
+**category-controlled** the same difference computed within each ``object_name`` class and
+    averaged, weighted by the harmonic mean of the two subset sizes in that class
+    (Cochran-Mantel-Haenszel). Classes present in only one subset contribute nothing. A
+    controlled difference much smaller than the raw one means class composition drove it.
+
+This is an observational split, not an intervention; the corruption sweep
+(``corrupt_parse_cache.py`` + ``parse_error_propagation.py``) is the intervening version.
+"""
 
 import argparse
 import math
@@ -5,6 +32,8 @@ import os
 import sys
 from collections import Counter, defaultdict
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/analysis/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from experiments.ablation.parsers.eval_parser_target_accuracy import match_kinds
@@ -29,6 +58,7 @@ CRITERIA = ("exact", "substring", "fuzzy")
 
 
 def label_rows(rows, cache, criterion):
+    """Split rows by whether the parser's target matches object_name."""
     correct, wrong, uncovered = [], [], 0
     for row in rows:
         parsed = parse_for(cache, row["scene_id"], row["object_id"], row["ann_id"])
@@ -51,6 +81,13 @@ def subset_stats(rows, threshold):
 
 
 def controlled_difference(correct, wrong, threshold):
+    """Cochran-Mantel-Haenszel style difference, stratified by object_name.
+
+    Within each class the two subsets are directly comparable; across classes they are
+    not. Weighting each class by the harmonic mean of its two subset sizes gives the
+    classes that actually carry information the most influence, and gives zero weight to
+    classes present in only one subset.
+    """
     by_class = defaultdict(lambda: {"correct": [], "wrong": []})
     for row in correct:
         by_class[row["object_name"]]["correct"].append(row["iou"])
@@ -64,13 +101,14 @@ def controlled_difference(correct, wrong, threshold):
         n1, n2 = len(group["correct"]), len(group["wrong"])
         if n1 == 0 or n2 == 0:
             continue
-        weight = 2.0 * n1 * n2 / (n1 + n2)
+        weight = 2.0 * n1 * n2 / (n1 + n2)          # harmonic mean of the two sizes
         difference = (accuracy(group["correct"], threshold)
                       - accuracy(group["wrong"], threshold))
         weighted_sum += weight * difference
         total_weight += weight
         used += 1
 
+        # Cochran-Mantel-Haenszel accumulators for the stratified 2x2xK test.
         a = sum(1 for i in group["correct"] if i >= threshold)
         c = sum(1 for i in group["wrong"] if i >= threshold)
         total = n1 + n2
@@ -87,6 +125,7 @@ def controlled_difference(correct, wrong, threshold):
 
     if variance > 0:
         chi2 = (abs(observed - expected) - 0.5) ** 2 / variance
+        # Survival function of chi-square with 1 degree of freedom, in closed form.
         cmh_p = math.erfc(math.sqrt(chi2 / 2.0))
     else:
         chi2, cmh_p = float("nan"), float("nan")

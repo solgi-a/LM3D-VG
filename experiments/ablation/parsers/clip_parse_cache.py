@@ -1,9 +1,33 @@
+"""
+Enforce the 7 / 17 / 75 token caps on an existing tokenized parse cache.
+
+    python experiments/ablation/parsers/clip_parse_cache.py \
+        --input  data_parsing/final_parsing_tokenized_llama \
+        --output data_parsing/llama_parsing_tokenized_clipped
+
+``_transform_parsed`` allocates ``(num_token, 300)`` embedding rows with
+num_token = 7 / 17 / 75, but ``__getitem__`` sets the sequence lengths unclipped::
+
+    tgt_len = len(self.tokenized_parsed[scene_id][object_id][ann_id]['target'])   # :173
+    adj_len = len(... ['adjectives'])                                             # :174
+    ngh_len = len(... ['neighbors'])                                              # :175
+
+A field longer than its cap hands ``pack_padded_sequence`` in models/lang_module.py a
+length greater than the sequence dimension, which raises mid-training.
+
+The GPT-4o-mini caches are already clipped exactly at 7/17/75 (max == cap, zero violations
+across all 46,173 annotations). The LLaMA cache is not:
+
+    final_parsing_tokenized_llama  train  target max 8 (1 over), adjectives max 20 (3 over)
+"""
 
 import argparse
 import json
 import os
 import sys
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/ablation/parsers/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from experiments.ablation.parsers.tokenize_parse import FIELD_MAX_TOKENS, clip_tokens, validate_tokenized

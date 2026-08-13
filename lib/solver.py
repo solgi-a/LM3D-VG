@@ -1,3 +1,7 @@
+'''
+File Created: Monday, 25th November 2019 1:35:30 pm
+Author: Dave Zhenyu Chen (zhenyu.chen@tum.de)
+'''
 
 import os
 import sys
@@ -14,6 +18,8 @@ from utils.eta import decode_eta
 try:
     from pointnet2_ops.pt_utils import BNMomentumScheduler
 except ImportError:
+    # pointnet2_py_adv reuses pointnet2_python's pt_utils verbatim, so there are only
+    # two sources for this symbol, not three.
     from pointnet.pointnet2_python.pt_utils import BNMomentumScheduler
 import json
 
@@ -96,8 +102,8 @@ class Solver():
     detection=True, reference=True, use_lang_classifier=True,
     lr_decay_step=None, lr_decay_rate=None, bn_decay_step=None, bn_decay_rate=None, lr_scheduler=None):
 
-        self.epoch = 0
-        self.verbose = 0
+        self.epoch = 0                    # set in __call__
+        self.verbose = 0                  # set in __call__
 
         self.model = model
         self.config = config
@@ -138,11 +144,14 @@ class Solver():
         self.my_log = {'train':{'25':[],'5':[]}, 'val':{'25':[],'5':[]}, 'train_loss':[], 'val_loss':[], 'train_ref_loss':[], 'val_ref_loss':[]}
         self.epoch_log = {'loss_train':[], 'loss_val':[], 'loss_ref_train':[], 'loss_ref_val':[]}
 
+        # init log
+        # contains all necessary info for all phases
         self.log = {
             "train": {},
             "val": {}
         }
 
+        # tensorboard
         os.makedirs(os.path.join(CONF.PATH.OUTPUT, stamp, "tensorboard/train"), exist_ok=True)
         os.makedirs(os.path.join(CONF.PATH.OUTPUT, stamp, "tensorboard/val"), exist_ok=True)
         self._log_writer = {
@@ -150,20 +159,25 @@ class Solver():
             "val": SummaryWriter(os.path.join(CONF.PATH.OUTPUT, stamp, "tensorboard/val"))
         }
 
+        # training log
         log_path = os.path.join(CONF.PATH.OUTPUT, stamp, "log.txt")
         self.log_fout = open(log_path, "a")
 
         eval_path = os.path.join(CONF.PATH.OUTPUT, stamp, "eval.txt")
         self.eval_fout = open(eval_path, "a")
 
+        # private
+        # only for internal access and temporary results
         self._running_log = {}
         self._global_iter_id = 0
-        self._total_iter = {}
+        self._total_iter = {}             # set in __call__
 
+        # templates
         self.__iter_report_template = ITER_REPORT_TEMPLATE
         self.__epoch_report_template = EPOCH_REPORT_TEMPLATE
         self.__best_report_template = BEST_REPORT_TEMPLATE
 
+        # bn scheduler
         if bn_decay_step and bn_decay_rate:
             it = -1
             start_epoch = 0
@@ -175,38 +189,51 @@ class Solver():
             self.bn_scheduler = None
 
     def __call__(self, epoch, verbose):
+        # setting
         self.epoch = epoch
         self.verbose = verbose
         self._total_iter["train"] = len(self.dataloader["train"]) * epoch
         self._total_iter["val"] = len(self.dataloader["val"]) * self.val_step
+        # base_lr = self.lr_scheduler.get_lr()[0]
+        # base_group_lr = [param['lr'] for param in self.optimizer.param_groups]
         for epoch_id in range(epoch):
             try:
                 self._log("epoch {} starting...".format(epoch_id + 1))
 
                 if self.lr_scheduler:
+                    # self.lr_scheduler.step()
                     print("learning rate --> {}\n".format(self.lr_scheduler.get_lr()), flush=True)
+                    # now_lr = self.lr_scheduler.get_lr()[0]
                     for (idx, param_group) in enumerate(self.optimizer.param_groups):
+                        # print(param_group.keys(), '<< param key shape')
                         print('[LR Param Group]', param_group['Param_Name'], param_group['lr'], '<< should', flush=True)
+                        # param_group['lr'] = base_group_lr[idx] / base_lr * now_lr
 
+                # feed 
                 self.dataloader['train'].dataset.shuffle_data()
                 self._feed(self.dataloader["train"], "train", epoch_id)
 
+                # save model
                 self._log("saving last models...\n")
                 model_root = os.path.join(CONF.PATH.OUTPUT, self.stamp)
                 torch.save(self.model.state_dict(), os.path.join(model_root, "model_last.pth"))
 
+                # update lr scheduler
                 if self.lr_scheduler:
                     print("update learning rate --> {}\n".format(self.lr_scheduler.get_lr()))
                     self.lr_scheduler.step()
 
+                # update bn scheduler
                 if self.bn_scheduler:
                     print("update batch normalization momentum --> {}\n".format(self.bn_scheduler.lmbd(self.bn_scheduler.last_epoch)))
                     self.bn_scheduler.step()
                 
             except KeyboardInterrupt:
+                # finish training
                 self._finish(epoch_id)
                 exit()
 
+        # finish training
         self._finish(epoch_id)
 
     def _log(self, info_str):
@@ -221,17 +248,20 @@ class Solver():
 
     def _reset_log(self, phase):
         self.log[phase] = {
+            # info
             "forward": [],
             "backward": [],
             "eval": [],
             "fetch": [],
             "iter_time": [],
+            # loss (float, not torch.cuda.FloatTensor)
             "loss": [],
             "ref_loss": [],
             "lang_loss": [],
             "objectness_loss": [],
             "vote_loss": [],
             "box_loss": [],
+            # scores (float, not torch.cuda.FloatTensor)
             "lang_acc": [],
             "ref_acc": [],
             "obj_acc": [],
@@ -258,6 +288,7 @@ class Solver():
         return data_dict
 
     def _backward(self):
+        # optimize
         self.optimizer.zero_grad()
         self._running_log["loss"].backward()
         if self.args.detector == "GF" and self.args.clip_norm > 0:
@@ -273,6 +304,7 @@ class Solver():
             use_lang_classifier=self.use_lang_classifier
         )
 
+        # dump
         self._running_log["ref_loss"] = data_dict["ref_loss"]
         self._running_log["lang_loss"] = data_dict["lang_loss"]
         self._running_log["objectness_loss"] = data_dict["objectness_loss"]
@@ -288,6 +320,7 @@ class Solver():
             use_lang_classifier=self.use_lang_classifier
         )
 
+        # dump
         self._running_log["lang_acc"] = data_dict["lang_acc"].item()
         self._running_log["ref_acc"] = np.mean(data_dict["ref_acc"])
         self._running_log["obj_acc"] = data_dict["obj_acc"].item()
@@ -301,22 +334,30 @@ class Solver():
         self._running_log["max_iou_rate_0.5"] = np.mean(data_dict["max_iou_rate_0.5"])
 
     def _feed(self, dataloader, phase, epoch_id):
+        # switch mode
         self._set_phase(phase)
 
+        # re-init log
         self._reset_log(phase)
 
+        # change dataloader
+        #dataloader = dataloader if phase == "train" else tqdm(dataloader)
         dataloader = tqdm(dataloader)
         for data_dict in dataloader:
+            # move to cuda
             for key in data_dict:
                 data_dict[key] = data_dict[key].cuda()
 
+            # initialize the running loss
             self._running_log = {
+                # loss
                 "loss": 0,
                 "ref_loss": 0,
                 "lang_loss": 0,
                 "objectness_loss": 0,
                 "vote_loss": 0,
                 "box_loss": 0,
+                # acc
                 "lang_acc": 0,
                 "ref_acc": 0,
                 "obj_acc": 0,
@@ -329,23 +370,29 @@ class Solver():
                 "max_iou_rate_0.5": 0
             }
 
+            # load
             self.log[phase]["fetch"].append(data_dict["load_time"].sum().item())
 
+            # with torch.autograd.set_detect_anomaly(True):
+            # forward
             data_dict["epoch_id"] = epoch_id
             start = time.time()
             data_dict = self._forward(data_dict)
             self._compute_loss(data_dict)
             self.log[phase]["forward"].append(time.time() - start)
 
+            # backward
             if phase == "train":
                 start = time.time()
                 self._backward()
                 self.log[phase]["backward"].append(time.time() - start)
             
+            # eval
             start = time.time()
             self._eval(data_dict)
             self.log[phase]["eval"].append(time.time() - start)
 
+            # record log
             self.log[phase]["loss"].append(self._running_log["loss"].item())
             self.log[phase]["ref_loss"].append(self._running_log["ref_loss"].item())
             self.log[phase]["lang_loss"].append(self._running_log["lang_loss"].item())
@@ -365,6 +412,7 @@ class Solver():
             self.log[phase]["max_iou_rate_0.25"].append(self._running_log["max_iou_rate_0.25"])
             self.log[phase]["max_iou_rate_0.5"].append(self._running_log["max_iou_rate_0.5"])
 
+            # report
             if phase == "train":
                 iter_time = self.log[phase]["fetch"][-1]
                 iter_time += self.log[phase]["forward"][-1]
@@ -382,24 +430,30 @@ class Solver():
                     self.my_log['train_loss'].append(self.log[phase]["loss"])
                     self.my_log['train_ref_loss'].append(self.log[phase]["ref_loss"])
 
+                # evaluation
                 if self._global_iter_id % self.val_step == 0 and self._global_iter_id != 0:
                     print("evaluating...")
+                    # val
                     self._feed(self.dataloader["val"], "val", epoch_id)
                     self._dump_log("val")
                     self._set_phase("train")
                     self._epoch_report(epoch_id)
 
+                # dump log
                 if self._global_iter_id % 50 == 0:
                     self._dump_log("train")
                 self._global_iter_id += 1
 
 
+        # check best
         if phase == "val":
             
             ious = self.log[phase]["ref_iou"]
             cur_criterion = "iou_rate_0.5"
             cur_criterion_25 = "iou_rate_0.25"
 
+            #cur_best = np.mean(self.log[phase][cur_criterion])
+            #cur_best_25 = np.mean(self.log[phase][cur_criterion_25])
 
             cur_best_25 = np.array(ious)[np.array(ious) >= 0.25].shape[0] / np.array(ious).shape[0]
             cur_best = np.array(ious)[np.array(ious) >= 0.5].shape[0] / np.array(ious).shape[0]
@@ -428,15 +482,23 @@ class Solver():
                 self.best["pos_ratio"] = np.mean(self.log[phase]["pos_ratio"])
                 self.best["neg_ratio"] = np.mean(self.log[phase]["neg_ratio"])
 
+                #self.best["iou_rate_0.25"] = np.mean(self.log[phase]["iou_rate_0.25"])
+                #self.best["iou_rate_0.5"] = np.mean(self.log[phase]["iou_rate_0.5"])
 
+                #ious = self.log[phase]["ref_iou"]
                 self.best["iou_rate_0.25"] = np.array(ious)[np.array(ious) >= 0.25].shape[0] / np.array(ious).shape[0]
                 self.best["iou_rate_0.5"] = np.array(ious)[np.array(ious) >= 0.5].shape[0] / np.array(ious).shape[0]
 
+                # save model
                 self._log("saving best models...\n")
                 model_root = os.path.join(CONF.PATH.OUTPUT, self.stamp)
                 torch.save(self.model.state_dict(), os.path.join(model_root, "model.pth"))
 
 
+            #iou_5_result = np.mean(self.log[phase]["iou_rate_0.5"])
+            #iou_25_result = np.mean(self.log[phase]["iou_rate_0.25"])
+
+            #ious = self.log[phase]["ref_iou"]
             iou_5_result = np.array(ious)[np.array(ious) >= 0.5].shape[0] / np.array(ious).shape[0]
             iou_25_result = np.array(ious)[np.array(ious) >= 0.25].shape[0] / np.array(ious).shape[0]
 
@@ -483,8 +545,10 @@ class Solver():
                 )
 
     def _finish(self, epoch_id):
+        # print best
         self._best_report()
 
+        # save check point
         self._log("saving checkpoint...\n")
         save_dict = {
             "epoch": epoch_id,
@@ -494,14 +558,17 @@ class Solver():
         checkpoint_root = os.path.join(CONF.PATH.OUTPUT, self.stamp)
         torch.save(save_dict, os.path.join(checkpoint_root, "checkpoint.tar"))
 
+        # save model
         self._log("saving last models...\n")
         model_root = os.path.join(CONF.PATH.OUTPUT, self.stamp)
         torch.save(self.model.state_dict(), os.path.join(model_root, "model_last.pth"))
 
+        # export
         for phase in ["train", "val"]:
             self._log_writer[phase].export_scalars_to_json(os.path.join(CONF.PATH.OUTPUT, self.stamp, "tensorboard/{}".format(phase), "all_scalars.json"))
 
     def _train_report(self, epoch_id):
+        # compute ETA
         fetch_time = self.log["train"]["fetch"]
         forward_time = self.log["train"]["forward"]
         backward_time = self.log["train"]["backward"]
@@ -514,6 +581,7 @@ class Solver():
         eta_sec += len(self.dataloader["val"]) * np.ceil(self._total_iter["train"] / self.val_step) * mean_est_val_time
         eta = decode_eta(eta_sec)
 
+        # print report
         ious = self.log["train"]["ref_iou"]
         iter_report = self.__iter_report_template.format(
             epoch_id=epoch_id + 1,
@@ -532,6 +600,8 @@ class Solver():
             train_neg_ratio=round(np.mean([v for v in self.log["train"]["neg_ratio"]]), 5),
             
             
+            #train_iou_rate_25=round(np.mean([v for v in self.log["train"]["iou_rate_0.25"]]), 5),
+            #train_iou_rate_5=round(np.mean([v for v in self.log["train"]["iou_rate_0.5"]]), 5),
             
             train_iou_rate_25 = round((np.array(ious)[np.array(ious) >= 0.25].shape[0] / np.array(ious).shape[0]),5),
             train_iou_rate_5 = round((np.array(ious)[np.array(ious) >= 0.5].shape[0] / np.array(ious).shape[0]),5),
@@ -583,6 +653,8 @@ class Solver():
             train_pos_ratio=round(np.mean([v for v in self.log["train"]["pos_ratio"]]), 5),
             train_neg_ratio=round(np.mean([v for v in self.log["train"]["neg_ratio"]]), 5),
             
+            #train_iou_rate_25=round(np.mean([v for v in self.log["train"]["iou_rate_0.25"]]), 5),
+            #train_iou_rate_5=round(np.mean([v for v in self.log["train"]["iou_rate_0.5"]]), 5),
             
             train_iou_rate_25 = round((np.array(train_ious)[np.array(train_ious) >= 0.25].shape[0] / np.array(train_ious).shape[0]),5),
             train_iou_rate_5 = round((np.array(train_ious)[np.array(train_ious) >= 0.5].shape[0] / np.array(train_ious).shape[0]),5),
@@ -602,6 +674,8 @@ class Solver():
             val_pos_ratio=round(np.mean([v for v in self.log["val"]["pos_ratio"]]), 5),
             val_neg_ratio=round(np.mean([v for v in self.log["val"]["neg_ratio"]]), 5),
             
+            #val_iou_rate_25=round(np.mean([v for v in self.log["val"]["iou_rate_0.25"]]), 5),
+            #val_iou_rate_5=round(np.mean([v for v in self.log["val"]["iou_rate_0.5"]]), 5),
             
             val_iou_rate_25 = round((np.array(val_ious)[np.array(val_ious) >= 0.25].shape[0] / np.array(val_ious).shape[0]),5),
             val_iou_rate_5 = round((np.array(val_ious)[np.array(val_ious) >= 0.5].shape[0] / np.array(val_ious).shape[0]),5),

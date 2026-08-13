@@ -1,34 +1,64 @@
+"""
+Seed ablation -- repeat the main configuration under several random seeds.
+
+    python experiments/ablation/runners/run_seeds.py
+
+Runs the unchanged main configuration once per seed, each in its own output folder, so the
+run-to-run spread can be measured.
+
+Geometric point-cloud augmentation is off in cached mode, but copy-paste in MatchModule,
+word masking / sentence reversal in LangModule, weight init and batch order all still vary
+with the seed.
+"""
 
 import os
 import subprocess
 import sys
 
+# ======================================================================================
+# CONFIG -- edit here
+# ======================================================================================
 
-RUN = True
-SEEDS = [1, 2]
-TAG_PREFIX = "ABL-SEED"
-PARSING_FOLDER = "final_parsing_tokenized"
-USE_CACHED_SCENES = True
+RUN = True                                    # master switch for this experiment
+SEEDS = [1, 2]                                # two extra seeds beside the paper's 42
+TAG_PREFIX = "ABL-SEED"                       # output folders: ABL-SEED1, ABL-SEED2, ...
+PARSING_FOLDER = "final_parsing_tokenized"    # main configuration
+USE_CACHED_SCENES = True                      # train the fusion net on cached proposals
 CACHED_SCENES_ROOT = 'cached_scenes'
-EPOCH = 50
-BATCH_SIZE = 8
-STOP_ON_FAILURE = True
-EXTRA_ARGS = ["--use_color", "--use_normal"]
+EPOCH = 20
+BATCH_SIZE = 16
+STOP_ON_FAILURE = True                        # abort the sweep if one seed fails
+EXTRA_ARGS = ["--use_color", "--use_normal"]  # must match how the cache was built
 
+# ---- warm start ----------------------------------------------------------------------
+# Fine-tune from a trained run rather than random init. With the detector frozen this
+# covers all 146 tensors, so it converges in far fewer epochs. All phase-A arms start
+# from the same checkpoint.
 WARM_START      = True
-WARM_START_FROM = '2024-12-18_20-40-38_3DVG-FIXED'
-FUSION_VARIANT  = 'original'
+WARM_START_FROM = '2024-12-18_20-40-38_3DVG-FIXED'   # a folder under outputs/
+FUSION_VARIANT  = 'original'    # the head WARM_START_FROM was trained with
 
-VAL_STEP  = 5000
-VERBOSE   = 10
-LR        = 0.002
-COSLR     = True
-LANG_NUM_MAX = 32
+# ---- training hyper-parameters --------------------------------------------------------
+VAL_STEP  = 50   # validate every N *iterations* (not epochs). Lower = slower training.
+VERBOSE   = 50     # print a training line every N iterations
+LR        = 0.002  # initial learning rate
+COSLR     = True   # cosine learning-rate schedule
+LANG_NUM_MAX = 32  # language samples per scene per batch
 
-NUM_WORKERS     = None
-PREFETCH_FACTOR = 3
+# ---- data loading ----------------------------------------------------------------------
+# __getitem__ costs ~20 ms, nearly all point-cloud work, so serial loading left the GPU
+# idle ~12 min per epoch. Each worker holds its own dataset copy (~1.8 GB with the lazy
+# language path).
+NUM_WORKERS     = 4   # None = auto (cpu_count - 1, max 4); 0 = serial
+PREFETCH_FACTOR = 1      # batches each worker keeps ready
+# Setting this False only takes effect via --no_lazy_lang_data below.
+LAZY_LANG_DATA  = True   # False materialises every GloVe embedding up front, ~36 GB RAM
 
 
+
+# ======================================================================================
+
+# experiments/ablation/runners/<this file> -> repo root is 4 levels up.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
@@ -42,6 +72,8 @@ def build_command(seed):
     if USE_CACHED_SCENES:
         cmd += ["--use_cached_scenes", "--cached_scenes_root", CACHED_SCENES_ROOT]
     if WARM_START:
+        # ablation_config.apply() clears --use_checkpoint in cached mode; --keep_checkpoint
+        # opts back in. Without it the run silently trains from random init.
         cmd += ["--use_checkpoint", WARM_START_FROM, "--keep_checkpoint",
                 "--fusion_variant", FUSION_VARIANT]
     else:
@@ -55,10 +87,13 @@ def build_command(seed):
     if NUM_WORKERS is not None:
         cmd += ["--num_workers", str(NUM_WORKERS)]
     cmd += ["--prefetch_factor", str(PREFETCH_FACTOR)]
+    if not LAZY_LANG_DATA:
+        cmd += ["--no_lazy_lang_data"]
     return cmd + EXTRA_ARGS
 
 
 def _cli_guard():
+    """Print the config and exit if any argument is passed; flags are ignored otherwise."""
     if len(sys.argv) <= 1:
         return False
     print(__doc__)

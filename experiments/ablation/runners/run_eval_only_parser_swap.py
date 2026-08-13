@@ -1,3 +1,32 @@
+"""
+Evaluation-only parser ablation: swap the parser at test time on a trained checkpoint.
+
+    RUNS ON: GPU. Evaluation only -- no training. One val pass per parser.
+
+    python experiments/ablation/runners/run_eval_only_parser_swap.py
+
+Takes the model trained on GPT-4o-mini parses and feeds it spaCy / LLaMA / no-parse output
+at test time, measuring sensitivity to parse quality in a few GPU-minutes instead of
+several GPU-hours.
+
+The model was trained on one parser's output distribution and is evaluated on another's, so
+the result confounds the intrinsic quality of the alternative parse with the train/test
+distribution mismatch. The controlled comparison is the set of per-variant training runs
+(``run_parser_{gpt,spacy,llama,none,smalllm}.py``); this is a supplement to them.
+
+Result layout::
+
+    outputs/<FOLDER>/parser_swap/
+        gpt4o-mini/{predictions.p, scores.p, eval_stdout.txt}     <- train/test matched
+        spacy/...
+        llama/...
+        none/...
+        run_summary.json
+
+The first entry is the parse the model was trained on, so the others are read against it.
+Any pre-existing ``predictions.p`` / ``scores.p`` is backed up and restored, since
+ScanRefer_eval.py always writes to the same filenames.
+"""
 
 import json
 import os
@@ -7,30 +36,46 @@ import subprocess
 import sys
 import time
 
+# ======================================================================================
+# CONFIG -- edit here
+# ======================================================================================
 
-RUN = True
-FOLDER = "2024-12-18_20-40-38_3DVG-FIXED"
+RUN = True                                     # master switch for this experiment
+FOLDER = "2024-12-18_20-40-38_3DVG-FIXED"      # trained run under outputs/ to evaluate
+#: Which MatchModule to build. FOLDER above was trained with the older fusion
+#: head, so "original" is required -- with "current" the eval would leave 178
+#: tensors randomly initialised and ablation_hooks now refuses outright.
 FUSION_VARIANT = "original"
 
+#: (label, parse folder under data_parsing/). The FIRST is the training-time parse.
 PARSERS = [
-    ("gpt4o-mini", "final_parsing_tokenized"),
+    ("gpt4o-mini", "final_parsing_tokenized"),          # matched: what it was trained on
     ("spacy", "spacy_parsing_tokenized"),
     ("llama", "llama_parsing_tokenized_clipped"),
     ("none", "noparse_tokenized"),
+    ("smalllm", "smalllm_parsing_tokenized"),
 ]
 
-BATCH_SIZE = 8
+BATCH_SIZE = 32
 LANG_NUM_MAX = 1
-EXTRA_ARGS = ["--use_color", "--use_normal"]
-SKIP_MISSING = True
+EXTRA_ARGS = ["--use_color", "--use_normal"]   # must match the trained configuration
+SKIP_MISSING = True                            # skip a parser whose cache is absent
 
+# ======================================================================================
 
+# experiments/ablation/runners/<this file> -> repo root is 4 levels up.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 OUTPUT_DIR = os.path.join(REPO_ROOT, "outputs", FOLDER)
 ARCHIVE_ROOT = os.path.join(OUTPUT_DIR, "parser_swap")
 ARTIFACTS = ("predictions.p", "scores.p")
 
-_IOU_LINE = re.compile(r"iou rate 0\.25:\s*([0-9.]+)", re.IGNORECASE)
+# ScanRefer_eval.py prints one line per (subset, split, metric), e.g.
+#   overall | overall | acc@0.25iou: 0.4643458140513252
+# The overall/overall row is the one to record; the rest are subset breakdowns.
+_IOU_LINE = re.compile(
+    r"overall\s*\|\s*overall\s*\|\s*acc@0\.25iou:\s*([0-9.]+)", re.IGNORECASE)
+_IOU_LINE_50 = re.compile(
+    r"overall\s*\|\s*overall\s*\|\s*acc@0\.5iou:\s*([0-9.]+)", re.IGNORECASE)
 
 
 def has_cache(parsing_folder):
@@ -70,20 +115,34 @@ def run_one(label, parsing_folder):
     with open(os.path.join(destination, "eval_stdout.txt"), "w") as f:
         f.writelines(captured)
 
-    accuracy = None
-    for line in reversed(captured):
-        match = _IOU_LINE.search(line)
-        if match:
-            accuracy = float(match.group(1))
-            break
+    def _scrape(pattern):
+        for line in reversed(captured):
+            match = pattern.search(line)
+            if match:
+                return float(match.group(1))
+        return None
+
+    accuracy = _scrape(_IOU_LINE)
+    accuracy_50 = _scrape(_IOU_LINE_50)
+    if accuracy is None and code == 0:
+        # A clean exit with no parseable accuracy means the eval output format moved.
+        # Say so at the time rather than writing a null nobody notices.
+        print(f"[swap] WARNING: {label} exited 0 but no 'overall | overall | acc@0.25iou' "
+              f"line was found. Check {os.path.join(destination, 'eval_stdout.txt')}.")
 
     print(f"[swap] {label} finished in {elapsed / 60:.1f} min (exit {code}); "
           f"archived {moved}")
     return {"parser": label, "parsing_folder": parsing_folder, "exit_code": code,
-            "elapsed_sec": round(elapsed, 1), "acc_25": accuracy, "dir": destination}
+            "elapsed_sec": round(elapsed, 1), "acc_25": accuracy,
+            "acc_50": accuracy_50, "dir": destination}
 
 
 def _cli_guard():
+    """These runners are configured by the CONFIG block above, not by command-line flags.
+
+    Without this, `--help` or a mistyped flag would be silently ignored and a long run
+    would start anyway. Any argument prints the configuration and exits instead.
+    """
     if len(sys.argv) <= 1:
         return False
     print(__doc__)

@@ -1,3 +1,40 @@
+"""
+Export a stratified sample of parses for manual labelling.
+
+    RUNS ON: CPU. Seconds. No GPU, no model.
+
+    python experiments/analysis/annotation_sheet.py --num 200 \
+        --parse gpt4o-mini=final_parsing_tokenized \
+        --parse spacy=spacy_parsing_tokenized \
+        --parse llama=llama_parsing_tokenized_clipped
+
+Target extraction is scored automatically against ``object_name``
+(``eval_parser_target_accuracy.py``). Attributes and adjacent objects have no ground truth
+in ScanRefer, so they need hand labelling.
+
+The sample is **paired across parsers** -- the same annotations for every parser, so the
+comparison is within-item and description difficulty drops out.
+
+It is **stratified by target correctness**: a uniform draw would be ~90% correct parses.
+``--wrong-fraction`` (default 0.4) forces in a share of detected target errors, and the
+strata with their true population sizes go to ``sampling_manifest.json`` so
+``error_taxonomy.py`` can re-weight back to population rates.
+
+``--seed`` fixes the draw, so the sample can be repeated or extended.
+
+Output
+------
+``outputs/analysis/annotation/``
+
+    annotation_sheet_<parser>.csv   the sheet to fill in, one row per sample
+    annotation_sheet_<parser>.txt   the same content, readable, for working on paper
+    instructions.md                 the taxonomy and the labelling rules
+    sampling_manifest.json          strata sizes and weights, for re-weighting
+
+Fill the five blank columns, then tally with::
+
+    python experiments/analysis/error_taxonomy.py --sheet gpt4o-mini=<filled csv>
+"""
 
 import argparse
 import csv
@@ -5,11 +42,14 @@ import os
 import random
 import sys
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/analysis/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from experiments.ablation.parsers.eval_parser_target_accuracy import match_kinds
 from experiments.analysis.common import ensure_dir, load_parse_cache, load_scanrefer, parse_for, save_json
 
+#: The five columns the annotator fills in. Kept blank in the exported sheet.
 BLANK_COLUMNS = ("target_ok", "adjectives_ok", "neighbors_ok", "error_type", "notes")
 
 FIXED_COLUMNS = ("sample_id", "parser", "scene_id", "object_id", "ann_id",
@@ -17,6 +57,7 @@ FIXED_COLUMNS = ("sample_id", "parser", "scene_id", "object_id", "ann_id",
                  "parsed_target", "parsed_adjectives", "parsed_neighbors",
                  "auto_target_match")
 
+#: Error taxonomy. Also duplicated in experiments/analysis/error_taxonomy.py, which validates it.
 TAXONOMY = {
     "ok": "all three fields are acceptable",
     "wrong_target": "the target names the wrong object",
@@ -64,6 +105,7 @@ Fill in the five blank columns of each `annotation_sheet_<parser>.csv`.
 
 
 def build_pool(records, cache, criterion):
+    """Split the split into (target-correct, target-wrong) using the automatic check."""
     correct, wrong = [], []
     for record in records:
         parsed = parse_for(cache, record["scene_id"], record["object_id"], record["ann_id"])
@@ -102,6 +144,7 @@ def main():
     for name, folder in parsers:
         caches[name] = load_parse_cache(folder, args.split, args.parsing_root)
 
+    # Strata are defined by the FIRST parser, so every parser gets the same sample_ids.
     anchor_name, anchor_folder = parsers[0]
     correct, wrong = build_pool(records, caches[anchor_name], args.criterion)
     print(f"[strata] anchored on {anchor_name} ({anchor_folder}): "

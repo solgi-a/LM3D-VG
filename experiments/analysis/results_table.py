@@ -1,3 +1,26 @@
+"""
+Main results table: Overall / Unique / Multiple, with a paired baseline test.
+
+    RUNS ON: CPU. Seconds. No GPU, no model -- reads predictions.p.
+
+    python experiments/analysis/results_table.py \
+        --predictions ours=outputs/2024-12-18_20-40-38_3DVG-FIXED/predictions.p \
+        --predictions 3DVG-Trans=outputs/3DVG-TRANS-outputs/predictions.p
+
+Every number is recomputed from a prediction file rather than copied from the published
+tables.
+
+The Unique/Multiple split follows ScanRefer: an annotation is *unique* when its scene
+holds exactly one object of the referred object's NYU40 class. The class is the mapped
+label, not the raw ``object_name`` -- mapping through ``scannetv2-labels.combined.tsv``
+turns 3759/5749 into 1845/7663. ``common.unique_multiple_lookup`` ports
+``lib/dataset.py:494-566``; its docstring covers why ``scores.p["masks"]`` is unusable
+here.
+
+Models share the same 9,508 annotations, so significance is tested with McNemar, which
+conditions on the annotations where two models disagree. The bootstrap CI resamples
+annotations and carries the same pairing.
+"""
 
 import argparse
 import os
@@ -5,6 +28,8 @@ import sys
 
 import numpy as np
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/analysis/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from experiments.analysis.common import (
@@ -105,6 +130,7 @@ def main():
     table = md_table(headers, rows)
     print("\n" + table)
 
+    # ---- paired comparison against the reference -------------------------------------
     comparison_rows = []
     for name in models[1:]:
         for subset in SUBSETS:
@@ -143,13 +169,13 @@ def main():
         print(comparison)
         comparison_rows = []
 
+    # ---- narrative ------------------------------------------------------------------
     lines = ["# Main results table\n",
              f"split: `{args.split}` | annotations: {len(order)} "
              f"(unique {int(subset_mask['unique'].sum())}, "
              f"multiple {int(subset_mask['multiple'].sum())})\n",
              "**All numbers below were computed on this machine from `predictions.p`, "
-             "not quoted from the original papers.** State that in the table caption "
-             "(Reviewer #1.4, #3.2, #4.9).\n",
+             "not quoted from the original papers.**\n",
              table]
 
     verdicts = []

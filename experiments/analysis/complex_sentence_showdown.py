@@ -1,3 +1,26 @@
+"""
+Parsers head to head on the hardest descriptions in the dataset.
+
+    RUNS ON: CPU. Seconds -- the dependency depths are already cached on disk.
+
+    python experiments/analysis/complex_sentence_showdown.py --num 10
+
+One number per parser over the whole split hides where the difference lives: a rule chain
+and an LLM behave almost identically on "there is a black chair" and diverge on long,
+deeply nested descriptions. So two things come out together -- the N hardest descriptions
+with every parser's output side by side, and the same measurements over the whole split
+stratified into complexity quartiles, which is what keeps the former from being
+cherry-picked.
+
+Complexity is spaCy dependency-tree depth (``--rank-by depth``, the default), tie-broken by
+token count. Depth counts how deeply relative clauses nest, which is what a rule chain over
+noun chunks has to get right. Depths are read from
+outputs/analysis/dep_depth_cache.json, populated for the whole val split by
+linguistic_complexity.py, so nothing is recomputed.
+
+Writes outputs/analysis/complex_sentence_showdown/{md,json,png,cases.txt}. Scope is parse
+quality; no model is run and no prediction is read.
+"""
 
 import argparse
 import os
@@ -15,6 +38,7 @@ from experiments.analysis.linguistic_complexity import (
 
 RANKERS = {"depth": metric_depth, "tokens": metric_tokens, "spatial": metric_spatial}
 
+#: Quartile labels, hardest last.
 QUARTILES = ("Q1 simplest", "Q2", "Q3", "Q4 hardest")
 
 
@@ -24,6 +48,11 @@ def field_text(parse, field):
 
 
 def quartile_indices(values):
+    """Split rows into four equal-count buckets by rank, ties broken by position.
+
+    Rank-based rather than value-based: dependency depth is a small integer and whole
+    quartiles would otherwise collapse into a single value.
+    """
     order = sorted(range(len(values)), key=lambda i: values[i])
     buckets = [0] * len(values)
     size = max(len(values) / 4.0, 1e-9)
@@ -33,6 +62,7 @@ def quartile_indices(values):
 
 
 def stratified(keys, parses, names, buckets_by_key, field):
+    """Declined-rate per parser per complexity quartile."""
     table = {name: [] for name in names}
     for q in range(4):
         subset = [k for k in keys if buckets_by_key[k] == q]
@@ -56,6 +86,7 @@ def make_plot(cases, names, strat, path):
         return None
 
     n_rows = len(cases)
+    # One row per case, one column per parser, plus a full-width summary row on top.
     figure = plt.figure(figsize=(4.6 * len(names), 2.0 + 2.05 * n_rows))
     grid = figure.add_gridspec(n_rows + 1, len(names), height_ratios=[1.5] + [1] * n_rows)
 
@@ -165,6 +196,7 @@ def main():
 
     strat = {f: stratified(keys, parses, names, buckets_by_key, f) for f in FIELDS}
 
+    # The hardest N, ranked by the chosen metric then by length.
     order = sorted(range(len(rows)), key=lambda i: (values[i], tokens[i]), reverse=True)
     cases = []
     for i in order[:args.num]:
@@ -195,6 +227,7 @@ def main():
              "**coverage** (how often a parser leaves the slot empty) and, for the "
              "selected cases, the raw output for inspection.", ""]
 
+    # --- the statistic ---
     lines += ["## Whole split, by complexity quartile", ""]
     for field in FIELDS:
         header = ["parser"] + [f"{q} (declined %)" for q in QUARTILES] + ["Q4 - Q1"]
@@ -210,6 +243,7 @@ def main():
         print()
         lines += [f"### {field}", "", table, ""]
 
+    # --- verdicts from the numbers ---
     lines += ["**Reading:**", ""]
     adj = strat["adjectives"]
     worst = max(names, key=lambda n: adj[n][3]["empty_rate"])
@@ -232,6 +266,7 @@ def main():
         print(line)
     print()
 
+    # --- the cases ---
     lines += ["", "## The hardest descriptions", ""]
     case_lines = []
     for n, case in enumerate(cases, 1):

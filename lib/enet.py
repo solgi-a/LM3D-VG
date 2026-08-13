@@ -5,6 +5,7 @@ from functools import reduce
 from torch.autograd import Variable
 import torch._utils
 
+# compatible with PyTorch 0.4.0
 try:
     torch._utils._rebuild_tensor_v2
 except AttributeError:
@@ -35,18 +36,26 @@ class Lambda(LambdaBase):
 
 class LambdaMap(LambdaBase):
     def forward(self, input):
+        # result is Variables list [Variable1, Variable2, ...]
         return list(map(self.lambda_func, self.forward_prepare(input)))
 
 
 class LambdaReduce(LambdaBase):
     def forward(self, input):
+        # result is a Variable
         return reduce(self.lambda_func, self.forward_prepare(input))
 
 
 class Padding(nn.Module):
+    # pad puts in [pad] amount of [value] over dimension [dim], starting at
+    # index [index] in that dimension. If pad<0, index counts from the left.
+    # If pad>0 index counts from the right.
+    # When nInputDim is provided, inputs larger than that value will be considered batches
+    # where the actual dim to be padded will be dimension dim + 1.
     def __init__(self, dim, pad, value, index, nInputDim):
         super(Padding, self).__init__()
         self.value = value
+        # self.index = index
         self.dim = dim
         self.pad = pad
         self.nInputDim = nInputDim
@@ -69,18 +78,24 @@ class Padding(nn.Module):
 
 
 class Dropout(nn.Dropout):
+    """
+    Cancel out PyTorch rescaling by 1/(1-p)
+    """
     def forward(self, input):
         input = input * (1 - self.p)
         return super(Dropout, self).forward(input)
 
 
 class Dropout2d(nn.Dropout2d):
+    """
+    Cancel out PyTorch rescaling by 1/(1-p)
+    """
     def forward(self, input):
         input = input * (1 - self.p)
         return super(Dropout2d, self).forward(input)
 
 
-class StatefulMaxPool2d(nn.MaxPool2d):
+class StatefulMaxPool2d(nn.MaxPool2d): # object keeps indices and input sizes
 
     def __init__(self, *args, **kwargs):
         super(StatefulMaxPool2d, self).__init__(*args, **kwargs)
@@ -113,17 +128,17 @@ pooling_1 = StatefulMaxPool2d((2, 2), (2, 2), (0, 0), ceil_mode=False)
 pooling_2 = StatefulMaxPool2d((2, 2), (2, 2), (0, 0), ceil_mode=False)
 
 def create_enet(num_classes):
-    enet = nn.Sequential(
-        LambdaMap(lambda x: x,
+    enet = nn.Sequential( # Sequential, 
+        LambdaMap(lambda x: x, # ConcatTable, 
             nn.Conv2d(3, 13, (3, 3), (2, 2), (1, 1), (1, 1), 1), 
             pooling_0, 
         ), 
         LambdaReduce(lambda x, y: torch.cat((x, y), 1)), 
         nn.BatchNorm2d(16, 0.001, 0.1, True), 
         nn.PReLU(16), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(16, 16, (2, 2), (2, 2), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(16, 0.001, 0.1, True), 
                     nn.PReLU(16), 
@@ -134,18 +149,18 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(64, 0.001, 0.1, True), 
                     Dropout2d(0.01), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                     pooling_1, 
                     Padding(0, 48, 0, 0, 3), 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(64), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(64, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(16, 0.001, 0.1, True), 
                     nn.PReLU(16), 
@@ -156,16 +171,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(64, 0.001, 0.1, True), 
                     Dropout2d(0.01), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(64), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(64, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(16, 0.001, 0.1, True), 
                     nn.PReLU(16), 
@@ -176,16 +191,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(64, 0.001, 0.1, True), 
                     Dropout2d(0.01), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(64), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(64, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(16, 0.001, 0.1, True), 
                     nn.PReLU(16), 
@@ -196,16 +211,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(64, 0.001, 0.1, True), 
                     Dropout2d(0.01), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(64), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(64, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(16, 0.001, 0.1, True), 
                     nn.PReLU(16), 
@@ -216,16 +231,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(64, 0.001, 0.1, True), 
                     Dropout2d(0.01), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(64), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(64, 32, (2, 2), (2, 2), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -236,18 +251,18 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                     pooling_2, 
                     Padding(0, 64, 0, 0, 3), 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -258,16 +273,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -278,16 +293,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -299,16 +314,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -319,16 +334,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -339,16 +354,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -359,16 +374,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -380,16 +395,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -400,16 +415,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -420,16 +435,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -440,16 +455,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -461,16 +476,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -481,16 +496,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -501,16 +516,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -521,16 +536,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -542,16 +557,16 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ), 
-        nn.Sequential(
-            LambdaMap(lambda x: x,
-                nn.Sequential(
+        nn.Sequential( # Sequential, 
+            LambdaMap(lambda x: x, # ConcatTable, 
+                nn.Sequential( # Sequential, 
                     nn.Conv2d(128, 32, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
                     nn.BatchNorm2d(32, 0.001, 0.1, True), 
                     nn.PReLU(32), 
@@ -562,16 +577,119 @@ def create_enet(num_classes):
                     nn.BatchNorm2d(128, 0.001, 0.1, True), 
                     Dropout2d(0.1), 
                 ), 
-                nn.Sequential(
-                    Lambda(lambda x: x),
+                nn.Sequential( # Sequential, 
+                    Lambda(lambda x: x), # Identity, 
                 ), 
             ), 
-            LambdaReduce(lambda x,y: x+y),
+            LambdaReduce(lambda x,y: x+y), # CAddTable, 
             nn.PReLU(128), 
         ),
+        # ENCODER END (add classifier)
         nn.Sequential(
             nn.Conv2d(128, num_classes, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False)
         )
+        #nn.Sequential( # Sequential, 
+        #    LambdaMap(lambda x: x, # ConcatTable, 
+        #        nn.Sequential( # Sequential, 
+        #            nn.Conv2d(128, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(16, 0.001, 0.1, True), 
+        #            nn.PReLU(16), 
+        #            nn.ConvTranspose2d(16, 16, (3, 3), (2, 2), (1, 1), (1, 1)), 
+        #            nn.BatchNorm2d(16, 0.001, 0.1, True), 
+        #            nn.PReLU(16), 
+        #            nn.Conv2d(16, 64, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(64, 0.001, 0.1, True), 
+        #        ), 
+        #        nn.Sequential( # Sequential, 
+        #            Lambda(lambda x: x), # Identity, 
+        #            nn.Conv2d(128, 64, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(64, 0.001, 0.1, True), 
+        #            StatefulMaxUnpool2d(pooling_2), #SpatialMaxUnpooling, 
+        #        ), 
+        #    ), 
+        #    LambdaReduce(lambda x,y: x+y), # CAddTable, 
+        #    nn.PReLU(64), 
+        #), 
+        #nn.Sequential( # Sequential, 
+        #    LambdaMap(lambda x: x, # ConcatTable, 
+        #        nn.Sequential( # Sequential, 
+        #            nn.Conv2d(64, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(16, 0.001, 0.1, True), 
+        #            nn.PReLU(16), 
+        #            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1), (1, 1), 1), 
+        #            nn.BatchNorm2d(16, 0.001, 0.1, True), 
+        #            nn.PReLU(16), 
+        #            nn.Conv2d(16, 64, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(64, 0.001, 0.1, True), 
+        #        ), 
+        #        nn.Sequential( # Sequential, 
+        #            Lambda(lambda x: x), # Identity, 
+        #        ), 
+        #    ), 
+        #    LambdaReduce(lambda x,y: x+y), # CAddTable, 
+        #    nn.PReLU(64), 
+        #), 
+        #nn.Sequential( # Sequential, 
+        #    LambdaMap(lambda x: x, # ConcatTable, 
+        #        nn.Sequential( # Sequential, 
+        #            nn.Conv2d(64, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(16, 0.001, 0.1, True), 
+        #            nn.PReLU(16), 
+        #            nn.Conv2d(16, 16, (3, 3), (1, 1), (1, 1), (1, 1), 1), 
+        #            nn.BatchNorm2d(16, 0.001, 0.1, True), 
+        #            nn.PReLU(16), 
+        #            nn.Conv2d(16, 64, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(64, 0.001, 0.1, True), 
+        #        ), 
+        #        nn.Sequential( # Sequential, 
+        #            Lambda(lambda x: x), # Identity, 
+        #        ), 
+        #    ), 
+        #    LambdaReduce(lambda x,y: x+y), # CAddTable, 
+        #    nn.PReLU(64), 
+        #), 
+        #nn.Sequential( # Sequential, 
+        #    LambdaMap(lambda x: x, # ConcatTable, 
+        #        nn.Sequential( # Sequential, 
+        #            nn.Conv2d(64, 4, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(4, 0.001, 0.1, True), 
+        #            nn.PReLU(4), 
+        #            nn.ConvTranspose2d(4, 4, (3, 3), (2, 2), (1, 1), (1, 1)), 
+        #            nn.BatchNorm2d(4, 0.001, 0.1, True), 
+        #            nn.PReLU(4), 
+        #            nn.Conv2d(4, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(16, 0.001, 0.1, True), 
+        #        ), 
+        #        nn.Sequential( # Sequential, 
+        #            Lambda(lambda x: x), # Identity, 
+        #            nn.Conv2d(64, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(16, 0.001, 0.1, True), 
+        #            StatefulMaxUnpool2d(pooling_1), #SpatialMaxUnpooling, 
+        #        ), 
+        #    ), 
+        #    LambdaReduce(lambda x,y: x+y), # CAddTable, 
+        #    nn.PReLU(16), 
+        #), 
+        #nn.Sequential( # Sequential, 
+        #    LambdaMap(lambda x: x, # ConcatTable, 
+        #        nn.Sequential( # Sequential, 
+        #            nn.Conv2d(16, 4, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(4, 0.001, 0.1, True), 
+        #            nn.PReLU(4), 
+        #            nn.Conv2d(4, 4, (3, 3), (1, 1), (1, 1), (1, 1), 1), 
+        #            nn.BatchNorm2d(4, 0.001, 0.1, True), 
+        #            nn.PReLU(4), 
+        #            nn.Conv2d(4, 16, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False), 
+        #            nn.BatchNorm2d(16, 0.001, 0.1, True), 
+        #        ), 
+        #        nn.Sequential( # Sequential, 
+        #            Lambda(lambda x: x), # Identity, 
+        #        ), 
+        #    ), 
+        #    LambdaReduce(lambda x,y: x+y), # CAddTable, 
+        #    nn.PReLU(16), 
+        #), 
+        #nn.ConvTranspose2d(16, num_classes, (2, 2), (2, 2), (0, 0), (0, 0)), 
     )
     return enet
 
@@ -579,10 +697,19 @@ def create_enet(num_classes):
 def create_enet_for_3d(num_2d_classes, model_path, num_3d_classes):
     model = create_enet(num_2d_classes)
     model.load_state_dict(torch.load(model_path))
+    # remove the classifier
     n = len(model)
     model_trainable = nn.Sequential(*(model[i] for i in range(n-9, n-1))) 
     model_fixed = nn.Sequential(*(model[i] for i in range(n-9))) 
+    #model_classifier = nn.Sequential(nn.Conv2d(128, num_3d_classes, (1, 1), (1, 1), (0, 0), (1, 1), 1, bias=False))
     model_classifier = nn.Sequential(model[n-1])
+    #print 'model_fixed'
+    #print model_fixed
+    #print 'model_trainable'
+    #print model_trainable
+    #print 'model_classifier'
+    #print model_classifier
+    #raw_input('sdflkj')
     for param in model_fixed.parameters():
         param.requires_grad = False
     return model_fixed, model_trainable, model_classifier

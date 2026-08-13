@@ -1,34 +1,66 @@
+"""
+Copy-paste ablation -- the main configuration with proposal copy-paste disabled.
+
+    python experiments/ablation/runners/run_no_copypaste.py
+
+Compare against run_parser_gpt.py (identical settings, copy-paste on) to isolate the
+augmentation's contribution.
+
+The augmentation lives inside the fusion network, not at the point-cloud level: the two
+blocks in models/match_module.py gated on ``data_dict["istrain"][0] == 1 and
+random_numer < 0.5``, which copy valid proposals' features into invalid slots. Being
+downstream of the scene cache, it keeps randomising under ``--use_cached_scenes``.
+``--disable_copy_paste`` turns both blocks off.
+"""
 
 import os
 import subprocess
 import sys
 
+# ======================================================================================
+# CONFIG -- edit here
+# ======================================================================================
 
-RUN = True
-TAG = "ABL-NO-COPYPASTE"
-DISABLE_COPY_PASTE = True
-PARSING_FOLDER = "final_parsing_tokenized"
-USE_CACHED_SCENES = True
+RUN = True                                    # master switch for this experiment
+TAG = "ABL-NO-COPYPASTE"                      # output folder suffix under outputs/
+DISABLE_COPY_PASTE = True                     # the point of this ablation
+PARSING_FOLDER = "final_parsing_tokenized"    # main configuration otherwise
+USE_CACHED_SCENES = True                      # train the fusion net on cached proposals
 CACHED_SCENES_ROOT = 'cached_scenes'
 SEED = 42
-EPOCH = 50
-BATCH_SIZE = 8
-EXTRA_ARGS = ["--use_color", "--use_normal"]
+EPOCH = 20
+BATCH_SIZE = 16
+EXTRA_ARGS = ["--use_color", "--use_normal"]  # must match how the cache was built
 
+# ---- warm start ----------------------------------------------------------------------
+# Fine-tune from a trained run rather than random init. With the detector frozen this
+# covers all 146 tensors, so it converges in far fewer epochs. All phase-A arms start
+# from the same checkpoint.
 WARM_START      = True
-WARM_START_FROM = '2024-12-18_20-40-38_3DVG-FIXED'
-FUSION_VARIANT  = 'original'
+WARM_START_FROM = '2024-12-18_20-40-38_3DVG-FIXED'   # a folder under outputs/
+FUSION_VARIANT  = 'original'    # the head WARM_START_FROM was trained with
 
-VAL_STEP  = 5000
-VERBOSE   = 10
-LR        = 0.002
-COSLR     = True
-LANG_NUM_MAX = 32
+# ---- training hyper-parameters --------------------------------------------------------
+VAL_STEP  = 50   # validate every N *iterations* (not epochs). Lower = slower training.
+VERBOSE   = 50     # print a training line every N iterations
+LR        = 0.002  # initial learning rate
+COSLR     = True   # cosine learning-rate schedule
+LANG_NUM_MAX = 32  # language samples per scene per batch
 
-NUM_WORKERS     = None
-PREFETCH_FACTOR = 3
+# ---- data loading ----------------------------------------------------------------------
+# __getitem__ costs ~20 ms, nearly all point-cloud work, so serial loading left the GPU
+# idle ~12 min per epoch. Each worker holds its own dataset copy (~1.8 GB with the lazy
+# language path).
+NUM_WORKERS     = 4   # None = auto (cpu_count - 1, max 4); 0 = serial
+PREFETCH_FACTOR = 1      # batches each worker keeps ready
+# Setting this False only takes effect via --no_lazy_lang_data below.
+LAZY_LANG_DATA  = True   # False materialises every GloVe embedding up front, ~36 GB RAM
 
 
+
+# ======================================================================================
+
+# experiments/ablation/runners/<this file> -> repo root is 4 levels up.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
@@ -44,6 +76,8 @@ def build_command():
     if USE_CACHED_SCENES:
         cmd += ["--use_cached_scenes", "--cached_scenes_root", CACHED_SCENES_ROOT]
     if WARM_START:
+        # ablation_config.apply() clears --use_checkpoint in cached mode; --keep_checkpoint
+        # opts back in. Without it the run silently trains from random init.
         cmd += ["--use_checkpoint", WARM_START_FROM, "--keep_checkpoint",
                 "--fusion_variant", FUSION_VARIANT]
     else:
@@ -57,10 +91,13 @@ def build_command():
     if NUM_WORKERS is not None:
         cmd += ["--num_workers", str(NUM_WORKERS)]
     cmd += ["--prefetch_factor", str(PREFETCH_FACTOR)]
+    if not LAZY_LANG_DATA:
+        cmd += ["--no_lazy_lang_data"]
     return cmd + EXTRA_ARGS
 
 
 def _cli_guard():
+    """Print the config and exit if any argument is passed; flags are ignored otherwise."""
     if len(sys.argv) <= 1:
         return False
     print(__doc__)

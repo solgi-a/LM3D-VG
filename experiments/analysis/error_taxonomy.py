@@ -1,3 +1,28 @@
+"""
+Tally the filled annotation sheets into the parse-error taxonomy table.
+
+    RUNS ON: CPU. Instant. No GPU, no model.
+
+    python experiments/analysis/error_taxonomy.py \
+        --sheet gpt4o-mini=outputs/analysis/annotation/annotation_sheet_gpt4o-mini.csv \
+        --sheet spacy=outputs/analysis/annotation/annotation_sheet_spacy.csv
+
+    # two annotators on the same parser -> Cohen's kappa
+    python experiments/analysis/error_taxonomy.py --sheet gpt4o-mini=a.csv --sheet gpt4o-mini=b.csv
+
+``annotation_sheet.py`` exports the sample and a human fills it in; this turns it into
+numbers.
+
+Unknown error codes, out-of-range ``*_ok`` values and blank rows are reported as problems
+rather than coerced, so a typo cannot become a category with n=1.
+
+The sample oversamples failures (see ``sampling_manifest.json``), so its raw field accuracy
+is not the dataset rate. Both are produced: ``sample`` for the annotated set, and
+``population`` re-weighted by stratum.
+
+Given two sheets for the same parser, raw agreement and Cohen's kappa per field are
+reported as well.
+"""
 
 import argparse
 import csv
@@ -6,6 +31,8 @@ import os
 import sys
 from collections import Counter, defaultdict
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/analysis/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from experiments.analysis.annotation_sheet import TAXONOMY
@@ -18,6 +45,7 @@ _FALSE = {"0", "n", "no", "false", "f"}
 
 
 def to_bool(value):
+    """Parse a tolerant yes/no cell. Returns True, False, or None when blank/unreadable."""
     text = (value or "").strip().lower()
     if text in _TRUE:
         return True
@@ -27,6 +55,7 @@ def to_bool(value):
 
 
 def read_sheet(path):
+    """Return (rows, problems). Rows keep their raw cells; validation is reported."""
     if not os.path.isfile(path):
         raise SystemExit(f"annotation sheet not found: {path}")
     with open(path, newline="") as f:
@@ -52,6 +81,11 @@ def split_codes(value):
 
 
 def load_weights(manifest_path):
+    """Per-stratum weights from the sampling manifest, plus the sample_id -> stratum map.
+
+    The manifest does not record which stratum each sample came from directly, but
+    ``auto_target_match`` in the sheet does: MISS means the target-wrong stratum.
+    """
     if not manifest_path or not os.path.isfile(manifest_path):
         return None
     with open(manifest_path) as f:
@@ -71,6 +105,7 @@ def stratum_of(row):
 
 
 def field_rates(rows, weights):
+    """Sample and population-weighted accuracy per field."""
     result = {}
     for field in FIELDS:
         values = [(stratum_of(row), to_bool(row.get(field))) for row in rows]
@@ -96,6 +131,7 @@ def field_rates(rows, weights):
 
 
 def cohens_kappa(a, b):
+    """Cohen's kappa for two aligned binary label lists, ignoring unpaired blanks."""
     pairs = [(x, y) for x, y in zip(a, b) if x is not None and y is not None]
     if not pairs:
         return None, 0

@@ -1,3 +1,37 @@
+"""
+Parser ablation, variant D -- no parser at all.
+
+    RUNS ON: CPU. Seconds. No model, no GPU, no network.
+
+    python experiments/ablation/parsers/make_noparse_cache.py --splits train val
+
+Writes ``data_parsing/noparse_tokenized/tokenized_parsed_result_{split}.json``, in which
+every annotation carries the same content-free placeholder in all three fields. The
+architecture is unchanged -- A2F and TAF still run -- so the difference against variants
+A/B/C/E is attributable to the parser alone.
+
+Why the placeholder is not zeros
+--------------------------------
+Two facts in the existing code decide the encoding:
+
+1. ``__getitem__`` sets ``tgt_len = len(tokens)`` unclipped (lib/dataset.py:173-175) and
+   the language module feeds that to ``pack_padded_sequence``, which raises on length 0.
+   An empty list is therefore impossible.
+2. ``_transform_parsed`` (lib/dataset.py:570-581) fills row *i* with ``glove[token]``, or
+   ``glove["unk"]`` when out of vocabulary. No token maps to a zero row -- ``glove["pad"]``
+   has sum|.| = 89.3, an ordinary trained vector. A zero-masked field is unreachable
+   without editing lib/dataset.py.
+
+So the field carries one token whose GloVe row is the model's own "no information" vector:
+
+    ``--encoding unk``            -> ["unk"]              (default)
+    ``--encoding not_mentioned``  -> ["not", "mentioned"]
+
+``unk`` is the default because the codebase already writes exactly that for "no parse" when
+``args.detection == True`` (lib/dataset.py:687-689), so variant D reaches that state
+through the normal parse-cache path with no code changes. ``not_mentioned`` is the GPT
+pipeline's convention for an unmentioned field and exists as a robustness check.
+"""
 
 import argparse
 import json
@@ -5,6 +39,8 @@ import os
 import sys
 from collections import defaultdict
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/ablation/parsers/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from experiments.ablation.parsers.run_spacy_parser import load_split
@@ -16,11 +52,14 @@ from experiments.ablation.parsers.tokenize_parse import (
 
 FIELDS = ("target", "adjectives", "neighbors")
 
+#: Placeholder token list per --encoding. Both are length >= 1 by construction, which is
+#: the constraint pack_padded_sequence imposes.
 ENCODINGS = {
     "unk": ["unk"],
     "not_mentioned": list(NOT_MENTIONED_TOKENS),
 }
 
+#: Where each encoding is written by default, so both can coexist on disk.
 DEFAULT_DIRS = {
     "unk": os.path.join("data_parsing", "noparse_tokenized"),
     "not_mentioned": os.path.join("data_parsing", "noparse_notmentioned_tokenized"),
@@ -28,12 +67,15 @@ DEFAULT_DIRS = {
 
 
 def build_split(split, placeholder, data_root, limit=None):
+    """Return the nested {scene: {object: {ann: parsed}}} dict for one split."""
     records, source = load_split(split, data_root)
     if limit:
         records = records[:limit]
 
     out = defaultdict(lambda: defaultdict(dict))
     for record in records:
+        # A fresh list per field per record: json.dump would happily share one object,
+        # but a shared mutable would be a trap for anything that post-processes this.
         out[record["scene_id"]][record["object_id"]][record["ann_id"]] = {
             field: list(placeholder) for field in FIELDS
         }

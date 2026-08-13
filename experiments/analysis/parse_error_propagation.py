@@ -1,3 +1,43 @@
+"""
+Do parse errors propagate to the grounding result?
+
+    RUNS ON: CPU. Seconds. Consumes evaluation output that already exists; producing it
+             needs a GPU -- see experiments/ablation/runners/run_parse_corruption.py.
+
+    python experiments/analysis/parse_error_propagation.py \
+        --run-dir outputs/2024-12-18_20-40-38_3DVG-FIXED/corruption
+
+Where ``parse_quality_split.py`` observes an association between naturally occurring parse
+errors and accuracy, this intervenes: sample, model and weights are fixed and only the
+parse changes.
+
+Pipeline
+--------
+    1. python experiments/ablation/parsers/corrupt_parse_cache.py --splits val --rates 0.10 0.25 0.50
+    2. python experiments/ablation/runners/run_parse_corruption.py          # GPU, eval only
+    3. python experiments/analysis/parse_error_propagation.py --run-dir ... # this script
+
+Expected input layout, produced by step 2::
+
+    outputs/<run>/corruption/
+        baseline/predictions.p                   uncorrupted reference (rate 0)
+        all_10/predictions.p
+        all_10/corruption_manifest.json          which annotations were corrupted
+        all_25/...
+        all_50/...
+
+Three numbers come out:
+
+**global accuracy vs corruption rate** -- the headline curve. At rate *r* only a fraction
+    *r* was touched, so the damage is diluted by (1 - r).
+
+**corrupted subset vs untouched subset** at each level, from the manifest. The untouched
+    subset acts as a control and should stay flat.
+
+**paired flip rate** over corrupted annotations only, each against its own baseline.
+    ``broke`` = right before, wrong after; ``fixed`` = wrong before, right after. McNemar
+    on that 2x2 is the matching test, since the same items are measured twice.
+"""
 
 import argparse
 import json
@@ -6,6 +46,8 @@ import os
 import re
 import sys
 
+# Resolve the repo root from this file, not the cwd, so the script works when
+# invoked as `python experiments/analysis/<name>.py` from anywhere.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from experiments.analysis.common import (
@@ -23,6 +65,7 @@ _RATE_IN_NAME = re.compile(r"_(\d{1,3})$")
 
 
 def discover(run_dir):
+    """Find every level directory under run_dir. Returns a list sorted by rate."""
     if not os.path.isdir(run_dir):
         raise SystemExit(
             f"run directory not found: {run_dir}\n"
@@ -58,16 +101,19 @@ def discover(run_dir):
 
 
 def corrupted_keys(manifest, split):
+    """{(scene, object, ann)} that were actually rewritten at this level."""
     if not manifest:
         return None
     entries = (manifest.get("corrupted") or {}).get(split)
     if entries is None:
+        # Fall back to whatever split the manifest does carry.
         buckets = manifest.get("corrupted") or {}
         entries = next(iter(buckets.values()), []) if buckets else []
     return {(str(e["scene_id"]), str(e["object_id"]), str(e["ann_id"])) for e in entries}
 
 
 def mcnemar(broke, fixed):
+    """Exact-ish McNemar with continuity correction. Returns (chi2, p)."""
     n = broke + fixed
     if n == 0:
         return float("nan"), float("nan")
@@ -213,6 +259,7 @@ def main():
                      else " — not statistically significant, so the model is fairly "
                           "robust to this corruption. Report that as the finding."))
 
+    # If the control fails, the whole table is suspect.
     controls = [r["untouched_subset"]["acc"] for r in results if "untouched_subset" in r]
     if len(controls) > 1:
         spread = max(controls) - min(controls)
