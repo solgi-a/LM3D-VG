@@ -548,19 +548,6 @@ The raw comparison is confounded and non-significant; controlling for object cla
 the effect larger and highly significant, because the misparsed subset happens to contain
 easier classes.
 
-**Failure modes** (4,858 failures, 51.1% of val):
-
-| Cause | Share |
-|---|---|
-| wrong instance of the right class | **65.6%** |
-| unattributed | 11.4% |
-| localisation drift | 7.1% |
-| wrong parsed target | 6.3% |
-| small object | 5.2% |
-| complex language | 4.4% |
-
-Two thirds of failures are instance-level confusion among same-class objects.
-
 Built on [ScanRefer](https://github.com/daveredrum/ScanRefer),
 [VoteNet](https://github.com/facebookresearch/votenet) and
 [3DVG-Transformer](https://github.com/zlccccc/3DVG-Transformer).
