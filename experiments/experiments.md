@@ -1,12 +1,6 @@
 # Experiments — the complete guide
 
-Everything written for the IMAVIS major revision (IMAVIS-D-26-00703): what each
-experiment tests, which reviewer comment it answers, how to run it, what has already
-been measured, and what belongs in the manuscript.
-
-This file replaces the four separate documents that used to live in `docs/`
-(`ablation_infrastructure.md`, `complexity_infrastructure.md`, `experiments_guide.md`,
-`experiments_README.md`).
+What each experiment tests, how to run it, and what has already been measured.
 
 **Run everything from the repository root**, either through
 [`run_analysis_colab.ipynb`](../run_analysis_colab.ipynb) — which runs all of it in
@@ -32,12 +26,9 @@ Four notebooks, each for a different job:
 | [3](#3-phase-b--evaluation) | Phase B — evaluation |
 | [4](#4-phase-c--post-processing) | Phase C — post-processing and analysis |
 | [5](#5-complexity-flops-memory-latency) | Complexity — FLOPs, memory, latency |
-| [6](#6-diagnostics) | Diagnostics — does the implementation match the paper? |
-| [7](#7-results-already-measured) | Results already measured |
-| [8](#8-what-to-report-in-the-paper) | What to report in the paper |
-| [9](#9-reviewer--experiment-map) | Reviewer → experiment map |
-| [10](#10-environment-and-troubleshooting) | Environment and troubleshooting |
-| [11](#11-full-command-list-in-dependency-order) | Full command list, in dependency order |
+| [6](#6-diagnostics) | Diagnostics — implementation checks |
+| [7](#7-environment-and-troubleshooting) | Environment and troubleshooting |
+| [8](#8-full-command-list-in-dependency-order) | Full command list, in dependency order |
 
 ---
 
@@ -64,8 +55,7 @@ those tables can still be regenerated in seconds.
 
 ## Layout
 
-All revision code lives under `experiments/`; nothing new was left among the original
-files. The dependency runs one way only — `lib/`, `models/` and `scripts/` import
+All experiment code lives under `experiments/`. The dependency runs one way only — `lib/`, `models/` and `scripts/` import
 `experiments.ablation.ablation_config` for the handful of flags that switch an
 experiment on, and nothing else.
 
@@ -74,7 +64,7 @@ experiments/
 ├── ablation/       rebuilds a cache or retrains          parsers/, runners/
 ├── analysis/       post-hoc on a finished run            CPU only, no model
 ├── complexity/     FLOPs, GPU memory, latency, parse cost
-└── diagnostics/    does the implementation match the paper?
+└── diagnostics/    implementation checks
 ```
 
 In detail:
@@ -99,13 +89,12 @@ experiments/ablation/
   runners/
     run_*.py                      [entry] one independent runner per ablation
     aggregate_seed_results.py     [entry] mean +/- std across seed runs
-    sweep_attention_layers.py     [entry] attention-layer sweep              (R3.3)
+    sweep_attention_layers.py     [entry] attention-layer sweep
 
 experiments/diagnostics/
   validate_scene_cache.py         [entry] prove cached == end-to-end   (GPU, strict)
   audit_scene_cache.py            [entry] model-free integrity + recall ceiling (CPU)
   cached_eval_cpu.py              [entry] cached-path accuracy without CUDA
-  verify_eq7_distance_bias.py     [entry] sign/magnitude of Eq. 7      (R1.3, R4.6)
 
 cached_scenes/                    generated scene cache, REPO ROOT (git-ignored)
   train/<scene_id>.p  val/<scene_id>.p  meta.json
@@ -150,7 +139,7 @@ the active config at startup.
 The last two are **not experiments** and are deliberately excluded from `enabled()`:
 they change *how* a run executes, never what it computes. `STRICT_CHECKPOINT` makes a
 half-loaded checkpoint an error instead of a silently meaningless accuracy;
-`LAZY_LANG_DATA` decides when the language tensors are built (see §10).
+`LAZY_LANG_DATA` decides when the language tensors are built (see §7).
 
 With every experiment flag `False`, `build_model` returns `RefNet` and `build_dataset`
 yields the original pipeline. It returns a `CachedSceneDataset` with `use_cache=False`
@@ -185,16 +174,16 @@ runner, its own CONFIG block and its own switch**, and none imports from another
 changing one experiment cannot disturb the others, and a Colab session that dies in the
 middle of one arm can be resumed by turning the finished ones off.
 
-| | experiment | runner | ablates | reviewer |
-|---|---|---|---|---|
-| **A1** | no copy-paste | `run_no_copypaste.py` | proposal copy-paste augmentation | R2, R4.7 |
-| **A2** | variant A | `run_parser_gpt.py` | — (reference arm) | R4.4 |
-| **A3** | variant B | `run_parser_spacy.py` | LLM → rule-based parser | R3.1 |
-| **A4** | variant C | `run_parser_llama.py` | GPT API → open LLaMA-3 | R2, R3.1 |
-| **A5** | variant D | `run_parser_none.py` | the parser entirely | R4.4 |
-| **A6** | variant E | `run_parser_smalllm.py` | GPT → 0.5B local model | R3.1, R4.5 |
-| **A7** | seeds | `run_seeds.py` | nothing — repeats A2 under more seeds | R4.8 |
-| **A8** | attention sweep | `sweep_attention_layers.py` | *(hyper-parameter, not an arm)* | R3.3 |
+| | experiment | runner | ablates |
+|---|---|---|---|
+| **A1** | no copy-paste | `run_no_copypaste.py` | proposal copy-paste augmentation |
+| **A2** | variant A | `run_parser_gpt.py` | — (reference arm) |
+| **A3** | variant B | `run_parser_spacy.py` | LLM → rule-based parser |
+| **A4** | variant C | `run_parser_llama.py` | GPT API → open LLaMA-3 |
+| **A5** | variant D | `run_parser_none.py` | the parser entirely |
+| **A6** | variant E | `run_parser_smalllm.py` | GPT → 0.5B local model |
+| **A7** | seeds | `run_seeds.py` | nothing — repeats A2 under more seeds |
+| **A8** | attention sweep | `sweep_attention_layers.py` | *(hyper-parameter, not an arm)* |
 
 ## 2.1 The frozen-detector protocol (scene caching)
 
@@ -252,20 +241,6 @@ simply be dropped.
 > Proposal copy-paste is **not** a point-cloud augmentation. It operates on proposal
 > features downstream of the cache boundary, so the dedicated copy-paste ablation can
 > run **on the cache** — no end-to-end bypass is needed.
-
-### Protocol statement for the paper
-
-> Parser, seed and copy-paste ablations were trained with the detection branch frozen
-> and its proposals pre-computed once per scene under a fixed point subsample and no
-> geometric augmentation. Proposal copy-paste and language-side augmentation remain
-> active. These runs are mutually comparable; they are not directly comparable to Table
-> 1, which is trained end to end with full augmentation.
-
-This is a real change of protocol, not just a speedup: in the current code the detector
-is **not** frozen (`--no_detection` is unset, so `backbone_net`/`vgen` train at `lr` and
-`proposal.detr` at `detr_lr`, and the detection losses are backpropagated).
-`ablation_config.apply()` sets `no_detection=True` and `detection=False` together so the
-correlated flags cannot drift apart.
 
 ### Building the cache
 
@@ -369,9 +344,7 @@ guard, switching `--model` mid-run blends two models' output into one cache.
 Every variant is written through the same tokenizer
 (`experiments/ablation/parsers/tokenize_parse.py`) with the same 7 / 17 / 75 token caps,
 so the language module and fusion network are untouched and the only thing that differs
-between arms is the parser. **That is what makes it a controlled comparison**, and it is
-the specific defect Reviewer #4 comment 4 identified in the current Table 6, which
-removes the parsed input *and* the fusion sub-modules together.
+between arms is the parser, which is what makes it a controlled comparison.
 
 ### Schema, derived from the real files
 
@@ -390,8 +363,7 @@ Two properties are load-bearing and were verified across all 46,173 annotations:
    prepositions, conjunctions and commas. Emitting bare head nouns would make the
    ablation compare *representation format* rather than parser quality.
 2. **An absent field is the literal string `"not mentioned"`** — never `null`, `""` or
-   `[]`. After tokenisation it becomes `["not", "mentioned"]`. **This is the direct
-   answer to Reviewer #4 comment 3.**
+   `[]`. After tokenisation it becomes `["not", "mentioned"]`.
 
 Tokenisation (lowercase, whitespace split, punctuation as its own token — matching
 ScanRefer's own `token` field) and the **7 / 17 / 75 token caps** are shared by every
@@ -415,9 +387,9 @@ python experiments/ablation/parsers/clip_parse_cache.py \
 
 ### Variant D — how "no parser" is encoded, and why it is not zeros
 
-**This is the variant that fixes the defect Reviewer #4 comment 4 identified.** The
-architecture is left completely intact — A2F and TAF still run — and only the parse
-content is removed.
+The architecture is left completely intact — A2F and TAF still run — and only the parse
+content is removed, so the difference against the other variants is attributable to the
+parser alone.
 
 Two facts in `lib/dataset.py` force the encoding:
 
@@ -428,8 +400,8 @@ Two facts in `lib/dataset.py` force the encoding:
    `glove["unk"]` when the token is out of vocabulary. **No token maps to a zero row** —
    verified directly: `glove["pad"]` has Σ|·| = 89.3, it is an ordinary trained vector.
 
-So a literal zero mask is unreachable without editing `lib/dataset.py`, which this
-revision does not do. The encoding used is a single `unk` token, which is exactly what
+So a literal zero mask is unreachable without editing `lib/dataset.py`, which this code
+does not do. The encoding used is a single `unk` token, which is exactly what
 the codebase already writes when `args.detection == True` (lines 687–689). A second
 cache with `["not", "mentioned"]` is generated alongside it as a robustness check.
 
@@ -448,10 +420,9 @@ python experiments/ablation/runners/run_parser_none.py                          
 
 ### Variant E — small local language model
 
-Answers Reviewer #3 comment 1 ("could a conventional parser suffice?") at the middle of
-the range: a small local model with the same prompt as the GPT reference. A 0.5B model
-landing close to GPT-4o-mini removes the API from the method's critical path and answers
-the cost objection in R2 / R4.5 at the same time.
+A small local model with the same prompt as the GPT reference, covering the middle of the
+range between a rule chain and a hosted LLM. A 0.5B model landing close to GPT-4o-mini
+removes the API from the method's critical path.
 
 ```bash
 python experiments/ablation/parsers/run_smalllm_parser.py --list-models   # downloads nothing
@@ -464,17 +435,14 @@ python experiments/ablation/parsers/run_smalllm_parser.py --list-models   # down
 | `flan-t5` | `google/flan-t5-base` | 0.25B | ~1.0 GB | `sentencepiece` |
 | `smollm2` | `HuggingFaceTB/SmolLM2-360M-Instruct` | 0.36B | ~0.7 GB | — |
 
-`qwen2.5` is the recommended default — same size as the roadmap's named model but a
-later instruction-tuning generation, so it adheres to the JSON schema more reliably,
-which directly lowers the malformed rate. `qwen2` matches the roadmap verbatim.
-`flan-t5` is fastest on CPU but weakest at the schema. **Record the exact model id in
-the paper** — "a small LM" is not reproducible.
+`qwen2.5` is the default — same size as `qwen2` but a later instruction-tuning
+generation, so it adheres to the JSON schema more reliably and the malformed rate is
+lower. `flan-t5` is fastest on CPU but weakest at the schema.
 
 Dependencies are checked **before** any network call, so a missing `sentencepiece` fails
 in a second rather than after a 1 GB download.
 
-The script counts and reports the **malformed-output rate** — Reviewer #4 comment 3 asks
-explicitly what happens when the model returns something unusable. The handling is:
+The script counts and reports the **malformed-output rate**. The handling is:
 extract the first balanced `{...}`; on a JSON failure repair single quotes and trailing
 commas; on a second failure fall back to `"not mentioned"` per field, and count it.
 **Quote that rate in the paper.**
@@ -507,24 +475,18 @@ copy-paste on) to isolate its contribution.
 
 ## 2.4 Seeds (A7)
 
-Reviewer #4 comment 8: *"The ScanRefer ablations are reported without variation across
-runs, although several differences are below one percentage point. Results over multiple
-random seeds would help establish whether these differences are stable."*
-
 Runs the unchanged main configuration once per seed into its own output folder, so the
-spread can be reported as mean ± std beside the ablation table.
+run-to-run spread can be reported as mean ± std beside the ablation table.
 
 What the seed still controls under the frozen detector: geometric point-cloud
 augmentation is off, but proposal copy-paste, the word masking and sentence reversal in
 `LangModule`, weight initialisation and batch order all sit downstream of the cache and
-keep randomising. Those are the variance sources R4.8 is asking about.
+keep randomising. Those are the run-to-run variance sources.
 
 > **Warm start and this experiment.** With `WARM_START` on (§2.6) every arm fine-tunes
-> from the same checkpoint, so the spread measured here is the spread *of fine-tuning* —
-> **narrower** than the from-scratch spread R4.8 is really asking about. That is still
-> reportable, but must be worded as "variation across seeds when fine-tuning from a
-> shared initialisation". For the wider, more conservative figure set `WARM_START =
-> False` and raise `EPOCH`.
+> from the same checkpoint, so the spread measured here is the spread *of fine-tuning*,
+> narrower than a from-scratch spread. For the wider figure, set `WARM_START = False` and
+> raise `EPOCH`.
 
 Aggregate the runs afterwards with `aggregate_seed_results.py` (§4.6).
 
@@ -534,9 +496,8 @@ Aggregate the runs afterwards with `aggregate_seed_results.py` (§4.6).
 python experiments/ablation/runners/sweep_attention_layers.py     # GPU
 ```
 
-R3.3 says the attention-layer count has no justification. Either run the sweep or state
-in Section 4 that the value was chosen on validation — both are acceptable and the
-second is free.
+The neighbour count and the graph depth were each chosen against a reported curve; the
+attention-layer count was not. This sweeps it.
 
 **`--nhead` and `--num_decoder_layers` do not work for this.** They are read only inside
 the `args.detector == "GF"` branch of `models/refnet.py`, and the training script runs
@@ -568,7 +529,7 @@ shipped checkpoint covers the model **completely**:
 So this is a true fine-tune, not a partial one, which is why 50 epochs is comfortable.
 Every phase-A arm warm-starts from the **same** checkpoint: the arms share a starting
 point and differ only in what each ablates, so the comparison between them stays fair.
-**Disclose it in the manuscript — these are fine-tuned runs, not from-scratch runs.**
+These are therefore fine-tuned runs, not from-scratch runs.
 
 Warm start goes through `--use_checkpoint`, **not** `--use_pretrained`: under the
 frozen-detector protocol `ablation_hooks.skip_pretrained_detector()` returns `True` and
@@ -579,8 +540,8 @@ the detector is never built, so the pretrained-detector mount is skipped by desi
 `ablation_config.apply()` clears `--use_checkpoint` by default, because an *accidental*
 shared initialisation would silently destroy the seed ablation — every "different seed"
 would start from identical weights and measure nothing. Here the shared start is
-deliberate and disclosed, so the runners opt back in. Without the flag the warm start is
-discarded and the run trains from random init **while appearing to fine-tune**.
+intended, so the runners opt back in. Without the flag the warm start is discarded and the
+run trains from random init **while appearing to fine-tune**.
 
 `comp_weight()` copies only tensors matching by **name and shape** and now reports how
 many it loaded, how many were skipped on a shape mismatch, and warns when more than half
@@ -650,14 +611,13 @@ python scripts/ScanRefer_eval.py --folder <run> --reference --force \
 ```
 
 Build it with the fusion variant the checkpoint was trained with (`--fusion_variant
-original` for the shipped run); see §6.3.
+original` for the shipped run); see §6.2.
 
-## 3.2 Parse-error propagation — the corruption sweep (R2, R4.3)
+## 3.2 Parse-error propagation — the corruption sweep
 
-The roadmap's "cheap and strong alternative": no training, evaluation only. Unlike the
-parse-quality split (§4.3) — which *observes* an association — this **intervenes**:
-sample, model and weights are fixed and only the parse changes, which makes the result
-causal. That is exactly what the word "propagate" asks about.
+No training, evaluation only. Unlike the parse-quality split (§4.3) — which *observes* an
+association — this **intervenes**: sample, model and weights are fixed and only the parse
+changes, which makes the result causal.
 
 ```bash
 python experiments/ablation/parsers/corrupt_parse_cache.py --splits val \
@@ -684,7 +644,7 @@ The runner archives each level's `predictions.p` before the next overwrites it �
 `scripts/ScanRefer_eval.py` always writes the same filenames, so without archiving only
 the last level would survive.
 
-## 3.3 Evaluation-only parser swap (R4.4)
+## 3.3 Evaluation-only parser swap
 
 ```bash
 python experiments/ablation/runners/run_eval_only_parser_swap.py   # GPU, ~40 min
@@ -720,7 +680,7 @@ CPU unless noted. Reads files off disk and writes reports.
 | C5 | complexity suite | `complexity/*` | CPU + **GPU** | minutes |
 | C6 | diagnostics | `diagnostics/*` | CPU (one GPU) | seconds |
 
-## 4.1 Parser target accuracy (R3.1)
+## 4.1 Parser target accuracy
 
 How often does each parser recover the ground-truth target noun? This **isolates parser
 quality from grounding quality**. Without it, a weak result for variant B is ambiguous —
@@ -742,25 +702,20 @@ Scored against ScanRefer's `object_name`, train split, 36,665 descriptions:
 Read carefully before quoting: most of the residual "errors" for the two LLMs are
 **synonym mismatches, not parse failures** — `couch → sofa`, `refrigerator → fridge`,
 `trash can → bin`, `nightstand → night stand`. spaCy's errors include genuine failures
-(`chair → object`, `door → object`), which is the real quality gap. Note also that LLaMA
-edges out GPT-4o-mini on this metric, which is worth stating honestly in the response
-letter.
+(`chair → object`, `door → object`), which is the real quality gap. LLaMA also edges out
+GPT-4o-mini on this metric.
 
 spaCy throughput: **~900 descriptions/s on CPU** (val 9,508 in 10.6 s; train 36,665 in
 40.8 s) with `en_core_web_sm`. `en_core_web_trf` is selectable via `--model` and is more
 accurate but ~30–50× slower.
 
-The script also dumps 20–30 parsed examples for manual review, deliberately mixing
-random draws with **failure cases**, since Reviewer #2 objected to a qualitative section
-built only from successes.
+The script also dumps 20–30 parsed examples for manual review, mixing random draws with
+failure cases.
 
-## 4.2 Linguistic complexity (R4.2)
+## 4.2 Linguistic complexity
 
-The most precise comment in the set. The paper motivates itself with "long, free-form
-sentences", but every reported split is Unique/Multiple — which measures *object
-ambiguity*, not *language complexity*.
-
-Four measures, all four that the reviewer and the roadmap name:
+The reported Unique/Multiple split measures *object ambiguity*, not *language
+complexity*. These four measures cover the latter:
 
 | Measure | Definition | Source |
 |---|---|---|
@@ -769,8 +724,8 @@ Four measures, all four that the reviewer and the roadmap name:
 | `neighbors` | adjacent-object phrases our parser extracted | comma segments of the `neighbors` field |
 | `spatial` | spatial-relation cues in the description | `SPATIAL_PHRASES` ∪ `SPATIAL_PREPS` from `parsers/spacy_parser.py` |
 
-A per-relation-type accuracy table is produced as well, because the reviewer asked for
-the "number **and type**" of spatial relations.
+A per-relation-type accuracy table is produced as well, so both the number and the type
+of spatial relations are covered.
 
 ```bash
 python experiments/analysis/linguistic_complexity.py \
@@ -778,8 +733,8 @@ python experiments/analysis/linguistic_complexity.py \
     --predictions 3DVG-Trans=outputs/3DVG-TRANS-outputs/predictions.p
 ```
 
-**Statistics note.** The table is binned because that is what belongs in the paper, but
-the significance tests are **not** computed over the bins. A Spearman correlation over
+**Statistics note.** The table is binned for readability, but the significance tests are
+**not** computed over the bins. A Spearman correlation over
 four bin means has n = 4, and scipy's asymptotic p-value degenerates to exactly 0
 whenever
 |ρ| = 1 — which four points reach easily and which would report a spurious certainty.
@@ -793,7 +748,7 @@ highest and the lowest bin** — the statistic that actually answers "does the a
 widen", and far better powered than a rank correlation on a three-valued advantage
 variable.
 
-### The measured answer, and how to report it
+### The measured result
 
 | Measure | per-bin gap (pp) | highest − lowest | 95% CI |
 |---|---|---|---|
@@ -805,12 +760,9 @@ variable.
 \* = individually significant (McNemar, p < 0.05).
 
 The gap is positive in every bin, individually significant in most, and larger in the
-complex bins — but **every CI on the widening includes zero**. So the honest claim is
-"consistent with the motivation", not "demonstrates it". Report the per-bin gaps with
-their significance markers and the widening CI together; quoting the +1.75 pp point
-estimate alone would overstate the evidence.
+complex bins, though every CI on the widening includes zero.
 
-## 4.3 Parse-correct vs parse-wrong split (R4.3)
+## 4.3 Parse-correct vs parse-wrong split
 
 ScanRefer's `object_name` labels every annotation's parse as correct or not for free.
 
@@ -838,7 +790,7 @@ easier classes, so the raw number understates it. Reporting only the raw figure 
 have thrown away a significant result — and reporting it without the control would have
 been indefensible.
 
-## 4.4 Manual annotation, 200 samples (R1.2, R4.3)
+## 4.4 Manual annotation, 200 samples
 
 Target extraction is scored automatically. **Attributes and adjacent objects cannot be**
 — ScanRefer has no ground truth for them, and they are two of the three fields the
@@ -860,7 +812,7 @@ Three properties make the sample defensible:
 - **Stratified** — `--wrong-fraction 0.4` oversamples automatically-detected target
   errors, because a uniform draw would be ~94 % correct parses and would barely
   constrain the taxonomy. `sampling_manifest.json` records the strata so
-  `error_taxonomy.py` can **re-weight back to population rates**. Quote the population
+  `error_taxonomy.py` can **re-weight back to population rates**. Use the population
   column; quoting the raw sample rate as a dataset rate would be a real error.
 - **Two annotators supported** — pass two sheets for one parser and Cohen's kappa per
   field is reported. A manual evaluation with no agreement number is easy to discount.
@@ -869,7 +821,7 @@ Taxonomy: `ok`, `wrong_target`, `missed_attribute`, `hallucinated_attribute`,
 `missed_neighbor`, `hallucinated_neighbor`, `malformed_output`. Unknown codes and
 unreadable cells are reported, not silently coerced.
 
-## 4.4b Adjectives and neighbors, scored automatically (R1.2)
+## 4.4b Adjectives and neighbors, scored automatically
 
 ```bash
 python experiments/analysis/parse_field_comparison.py \
@@ -906,19 +858,20 @@ Pairwise Jaccard on `adjectives`: GPT↔LLaMA **0.891**, GPT↔spaCy **0.627**,
 LLaMA↔spaCy **0.634**. The two LLMs were built independently and agree with each other;
 spaCy agrees with neither, and declines the attribute slot more than twice as often.
 
-**Three things to state honestly when quoting this.**
+**Three things to keep in mind when reading this.**
 
 - **Faithfulness is near-tautological for a rule-based parser.** spaCy's 99.7% is not a
   quality win: it can only copy tokens verbatim out of the sentence, so it *cannot* score
-  low. A parser emitting nothing would score 100%. Report it beside coverage, never alone.
+  low. A parser emitting nothing would score 100%; it only means something beside
+  coverage.
   The script's own generated verdict says exactly this.
 - **Agreement is not correctness.** Two parsers can agree and both be wrong. The LLM
   consensus is a reference *band*, not ground truth.
 - **Spatial-cue recall does not separate the parsers** (GPT 96.2%, spaCy 94.4%), and spaCy
   emits *more* neighbor phrases (1.30 vs 1.08). The story is coverage and agreement, not
-  recall — claiming otherwise is what a reviewer would catch.
+  recall.
 
-## 4.4c Parsers on the hardest descriptions (R3.1, R4.2)
+## 4.4c Parsers on the hardest descriptions
 
 ```bash
 python experiments/analysis/complex_sentence_showdown.py --num 10
@@ -942,17 +895,16 @@ Attribute slot left empty, by quartile:
 | GPT-4o-mini | 14.9% | 19.6% | 25.3% | 23.1% | +8.2 pp |
 | spaCy | 47.6% | 43.6% | 45.0% | 49.1% | **+1.5 pp** |
 
-**The honest reading, which the script generates itself:** spaCy does **not** degrade
-faster with complexity — its slope is *flatter* than the LLMs'. The damning number is the
-**level, not the slope**: it starts roughly twice as bad and stays there. Do not write
-"spaCy degrades on complex sentences"; write that it is uniformly worse and that the LLMs
-degrade toward it without reaching it.
+The reading the script generates: spaCy does **not** degrade faster with complexity — its
+slope is *flatter* than the LLMs'. The difference is in the **level, not the slope**: it
+starts roughly twice as bad and stays there, and the LLMs degrade toward it without
+reaching it.
 
 Both scripts are **CPU-only and read no `predictions.p`** — they measure *parse quality,
-not grounding accuracy*. The causal link between a worse parse and a worse box is §4.9's
-corruption experiment, which needs a GPU. Never quote these two as causal evidence.
+not grounding accuracy*. The causal link between a worse parse and a worse box is §3.2's
+corruption experiment, which needs a GPU.
 
-## 4.5 Failure cases and the qualitative figure (R2, R4)
+## 4.5 Failure cases and the qualitative figure
 
 Nothing previously *selected* failures — `scripts/visualize.py` renders whatever scene
 it is pointed at, but choosing which one is the problem.
@@ -989,7 +941,7 @@ The strongest panel is `parse_target_wrong_scene0011_00_obj17_ann4.png`: the des
 is *"there is a large painting on the wall. this the long skinny table under the
 painting…"*, the parser returned `painting` where the target was `table`, and the red
 box sits on the wall painting 4.01 m from the green box on the table. **That single
-figure shows parse error propagating into grounding failure — the mechanism R4.3 asks
+figure shows parse error propagating into grounding failure — the mechanism the
 about.**
 
 Boxes come from `predictions.p`, points from
@@ -997,7 +949,7 @@ Boxes come from `predictions.p`, points from
 this is re-checked for every case at run time and any panel that fails gets a visible
 warning stamped on it.
 
-## 4.6 Seed aggregation (R4.8)
+## 4.6 Seed aggregation
 
 ```bash
 python experiments/ablation/runners/aggregate_seed_results.py --pattern '*ABL-SEED*' --latex
@@ -1005,14 +957,14 @@ python experiments/ablation/runners/aggregate_seed_results.py --pattern '*ABL-PA
 ```
 
 Reports mean ± sample std with n, and emits a LaTeX row. At n = 1 it says the std is
-undefined rather than printing 0.00; at n = 2 it flags the estimate as weak. The roadmap
+undefined rather than printing 0.00; at n = 2 it flags the estimate as weak. The
 permits dropping to two seeds and forbids dropping to one.
 
 `--paired` additionally loads `scores.p` for two groups and runs McNemar's test on the
 same 9,508 annotations — a much sharper instrument than comparing two means with n = 3
 when the question is whether a sub-one-point difference is real.
 
-## 4.7 Main results table and baseline comparison (R1.4, R3.2, R4.9)
+## 4.7 Main results table and baseline comparison
 
 Nothing previously reproduced the paper's headline table from a finished run, or
 compared it against a baseline on the standard split.
@@ -1050,30 +1002,24 @@ The advantage is concentrated in **multiple** and is indistinguishable from zero
 
 # 5. Complexity: FLOPs, memory, latency
 
-Closes two reviewer gaps:
+FLOPs, GPU memory and inference latency for the grounding network, plus the per-query
+latency and cost of the parsing step.
 
-- **Reviewer #2** — *"The computational complexity section should report FLOPs, GPU
-  memory consumption, and inference latency in addition to parameter counts."*
-- **Reviewer #4, comment 5** — *"Figure 11 appears to measure only the grounding
-  network. Since each new query must be parsed by GPT-4o-mini, please clarify whether
-  parsing is performed offline and report its per-query latency or cost separately."*
+No pre-existing file was modified to add this suite — it is read-only with respect to the
+model and training code.
 
-**No pre-existing file was modified** to add this suite — it is read-only with respect
-to the model and training code.
+## 5.1 Prior measurement in the repo
 
-## 5.1 What was there before
-
-Only parameter counts, from `get_num_params()` — precisely the metric Reviewer #2 says
-is insufficient on its own. Everything else was missing or unusable:
+Only parameter counts, from `get_num_params()`. Everything else was missing or unusable:
 
 | Metric | Status before this work |
 |---|---|
 | FLOPs | One dead line in a `__main__` block (`models/detr/transformer3D.py:560-568`) calling `thop.profile` on a **single decoder layer**, discarding the result. `thop` is not installed. |
 | Peak GPU memory | **Nothing.** Zero occurrences of `max_memory_allocated`, `memory_reserved`, `memory_summary`, `nvidia-smi` or NVML anywhere in the repo. |
 | Parsing latency / cost | **Nothing for the LLM path.** The GPT-4o-mini parsing script is *not in this repository* — only its outputs. No `openai` import exists anywhere. |
-| Inference latency | Exists but unsound — see §5.5. |
+| Inference latency | Exists but unsound: `scripts/ScanRefer_eval.py:214-308` times `model(data)` with `time.time()`, no `torch.cuda.synchronize()` and no warmup, at `batch_size=8`, divided by a hardcoded `9508`. CUDA is asynchronous, so it measures kernel *launch*, not execution. |
 
-## 5.2 Design decisions worth flagging
+## 5.2 Design decisions
 
 ### FLOPs via `torch.utils.flop_counter.FlopCounterMode`, not fvcore
 
@@ -1099,8 +1045,7 @@ list before quoting a total.
 ### Two variants, always labelled, never conflated
 
 - **`end2end`** — full `RefNet`: PointNet++ → VoteNet → DETR decoder → language →
-  fusion. **This is the paper's deployed model and the number that belongs in the
-  complexity table**, and what a reviewer comparing against HAM / BUTD-DETR wants.
+  fusion. The deployed model, and the number that belongs in the complexity table.
 - **`cached`** — `CachedRefNet`: language + fusion only, reading pre-computed detector
   output. Substantially cheaper. Report it *only* to document the ablation protocol,
   never as the headline cost of the method.
@@ -1128,22 +1073,7 @@ own process* when `--cpu` is used. It changes nothing in the repository and noth
 about the arithmetic. Latency measured under the shim is meaningless and is labelled
 accordingly.
 
-## 5.3 Reviewer #4 comment 5 — answered from the code
-
-`measure_parsing_latency.py --mode offline_check` inspects `lib/dataset.py` and the
-whole forward path and reports `parser_invocations_in_forward_path: none`.
-
-> **Parsing is OFFLINE for every reported benchmark.** `lib/dataset.py` loads a
-> precomputed `tokenized_parsed_result_{split}.json` once at dataset construction and
-> indexes it by `(scene_id, object_id, ann_id)`. No parser — neither an LLM API call nor
-> spaCy — is invoked anywhere in the model forward path. Parsing therefore contributes
-> **zero** to the per-query latency of every number reported on ScanRefer / ReferIt3D.
-
-Parse cost is additive **only** in the deployment scenario of a genuinely unseen
-sentence, where one parse call precedes grounding. Report that separately — **never
-summed** with grounding latency into a single figure.
-
-## 5.4 Commands
+## 5.3 Commands
 
 ```bash
 # Step 0 — the deployment question (instant; no GPU, no network). Run this first.
@@ -1198,79 +1128,12 @@ Both scripts print a formatted table to stdout **and** write the same numbers to
 `outputs/complexity/{complexity_report.json,parsing_latency_report.json}`, so figures
 can be pulled into the manuscript table without retyping.
 
-## 5.5 Two things that must go into the manuscript
-
-### The existing 10.35 ms is not comparable to the new number
-
-`scripts/ScanRefer_eval.py:214-308` times `model(data)` with `time.time()`, with **no
-`torch.cuda.synchronize()` and no warmup**, at `batch_size=8`, dividing by a hardcoded
-`9508`. CUDA kernels are asynchronous, so that figure measures kernel **launch**, not
-execution — the wait is attributed to whichever later op forces a sync.
-
-Report the new, synchronised number **and state the measurement protocol**. If the two
-differ substantially, the difference is explained by synchronisation, warmup and batch
-size — not by any model change. Do not silently overwrite the old figure.
-
-*(The same missing-`synchronize()` issue affects the `forward`/`backward` timings logged
-by `lib/solver.py`. Those were left untouched.)*
-
-### Baseline FLOPs/memory need a footnote
-
-The paper `.docx` is no longer in the repo, so the baseline table could not be read.
-Unless HAM / BUTD-DETR etc. were reproduced locally, their FLOPs/memory numbers came
-from their original papers on **different hardware**. That must be disclosed in a table
-footnote. Reproducing them under matched conditions is the stronger option; the footnote
-is the honest minimum.
-
-Always quote latency and memory together with the `environment` block the script emits
-(GPU name, torch version, CUDA version). FLOPs are hardware-independent; those two are
-not.
-
-## 5.6 Caveat on the GPT-4o-mini numbers
-
-**The original GPT-4o-mini parsing script is not in this repository** — only its
-outputs, under `data_parsing/final_parsing/`. The prompt in `measure_parsing_latency.py`
-is **reconstructed** to reproduce the observed output schema (three surface-phrase
-fields; the literal `"not mentioned"` when absent).
-
-Its latency and token counts are therefore representative of an **equivalent** call, not
-a replay of the exact original one. Disclose that if the number is published. The
-alternative is to recover the figures from your original API logs.
-
----
-
 # 6. Diagnostics
 
-Checks that the implementation does what the paper claims, rather than producing a
-table.
+Correctness checks on the scene cache and the checkpoint, rather than experiments that
+produce a table.
 
-## 6.1 Eq. 7 — the reviewers are right about the paper and wrong about the code
-
-```bash
-python experiments/diagnostics/verify_eq7_distance_bias.py        # CPU, ~20 s
-```
-
-R1.3 and R4.6 read Eq. 7 as adding the distance matrix to the attention logits, so that
-*farther* objects gain weight. Measured against the repository's own `dist_cal` and
-`ScaledDotProductAttention`: the live term is `-d`, and head 1 puts **49× more**
-attention on the nearest quarter of proposals than the farthest (ρ = −0.84). The no-bias
-control shows no preference (0.99×); substituting `+d`, i.e. Eq. 7 as printed, flips it
-to 0.02×.
-
-**So this is a typesetting defect, not a modelling defect.** Correct the sign in the
-equation; do not touch `models/match_module.py`.
-
-Three further findings the script prints, all of which belong in the revision:
-
-- **The distance prior runs on one head out of four.** Head 0's bias has σ = 0.033
-  against a logit σ = 1.004 — 3 % — because `dist_cal` row-normalises `1/(d+1e-2)` into
-  O(1/N) values with N = 256. Heads 2 and 3 are literally zeros.
-- **The row-normalisation is on the wrong axis** to make a stochastic matrix: `dist_cal`
-  sums over `dim=2` (queries) while softmax normalises over `dim=-1` (keys).
-- **No `attention_mask` is ever passed**, so the `-inf` invalid-proposal removal in
-  `attention.py` is dead code on this path.
-
-## 6.2 Is the scene cache trustworthy?
+## 6.1 Is the scene cache trustworthy?
 
 ```bash
 python experiments/diagnostics/audit_scene_cache.py               # CPU, ~5 s
@@ -1294,7 +1157,7 @@ ceiling** — the fusion network can only return one of the 256 cached proposals
 141/141 val scenes, 18/18 keys, zero non-finite values. **The cache is not the
 bottleneck.**
 
-## 6.3 Does the cached path reproduce the accuracy, without a GPU?
+## 6.2 Does the cached path reproduce the accuracy, without a GPU?
 
 ```bash
 python experiments/diagnostics/cached_eval_cpu.py --num-samples 128 --fusion-variant original
@@ -1329,100 +1192,7 @@ deterministic vs random point subsampling rather than a weight problem.
 
 ---
 
-# 7. Results already measured
-
-Collected in one place; each is derived above.
-
-| | result |
-|---|---|
-| Parser target accuracy (exact) | spaCy 73.12 %, GPT-4o-mini 82.30 %, LLaMA 83.53 % (§4.1) |
-| Main table vs 3DVG-Trans | +2.67 pp @0.25, +4.67 pp @0.5; advantage concentrated in *multiple* (§4.7) |
-| Linguistic complexity | gap positive in every bin; every widening CI includes zero (§4.2) |
-| Parse-quality split | class-controlled +7.54 / +5.72 / +6.47 pp, all significant (§4.3) |
-| Failure causes | 65.6 % distractor confusion (§4.5) |
-| Scene-cache recall ceiling | 91.33 % @0.25 vs 48.91 % reported — cache is not the bottleneck (§6.2) |
-| Eq. 7 | typesetting defect, not a modelling defect; bias is `-d` and works (§6.1) |
-| Checkpoint | intact; needs `--fusion_variant original`, no retraining (§6.3) |
-| spaCy parse latency | mean 3.31 ms, p50 3.23, p95 4.40 (302 desc/s, $0/query) |
-| Parameter counts (`cached`) | total 2.24 M — lang 0.50 M, match 1.74 M |
-| Lazy language data | 1.77 GB peak RSS and 2.7 s build for the full train split (§10) |
-| Warm-start coverage | 146/146 tensors with `fusion_variant=original` (§2.6) |
-| Dataloader workers | 13.6 → 6.2 min/epoch of loading, 0 → 4 workers (§2.6) |
-
-**Still outstanding:** FLOPs, GPU memory, grounding latency, and the GPT-4o-mini
-latency/cost leg — all need a GPU box and, for the latter, an API key.
-
----
-
-# 8. What to report in the paper
-
-## The complexity table
-
-A row for **the `end2end` variant** with:
-
-| Column | Source |
-|---|---|
-| Params (M) | `results.end2end.params.total` |
-| GFLOPs | `results.end2end.flops.total_gflops` (batch 1) |
-| Peak GPU mem, inference (MB) | `results.end2end.peak_memory_mb.inference_bs1` |
-| Peak GPU mem, training (MB) | `results.end2end.peak_memory_mb.training_bs8` (lower bound) |
-| Latency (ms) | `results.end2end.latency_bs1` — quote mean ± std, and p95 |
-
-Plus, as **separate rows or a separate sentence**, never summed into the grounding
-latency:
-
-| | |
-|---|---|
-| Parsing, benchmark setting | **0 ms** — offline/precomputed (§5.3) |
-| Parsing, unseen-sentence deployment, GPT-4o-mini | from `gpt` mode: mean/p95 + $/query |
-| Parsing, unseen-sentence deployment, spaCy | 3.31 ms mean, p95 4.40 ms, $0 |
-
-Cross-reference the parser ablation when reporting the spaCy row: it removes the API
-dependency and its cost entirely, at a measured target-extraction accuracy penalty
-(73.12 % vs 82.30 % exact, §4.1).
-
-## Required disclosures
-
-1. **The frozen-detector protocol** — the statement in §2.1. Those runs are mutually
-   comparable but not directly comparable to Table 1.
-2. **Warm start** — phase-A arms are fine-tuned from a shared initialisation, not
-   trained from scratch (§2.6). This also qualifies how the seed spread in §2.4 should
-   be worded.
-3. **Variant D's encoding** — a single `unk` token, not zeros, with the reason (§2.2).
-4. **The malformed-output rate** for variant E (§2.2).
-5. **The latency measurement protocol**, explaining the difference from the old 10.35 ms
-   figure (§5.5).
-6. **Baseline FLOPs/memory come from their original papers on different hardware**
-   (§5.5).
-7. **What the FLOP counter does not count** — elementwise ops, softmax, normalisation,
-   index gathers (§5.2).
-8. **The GPT-4o-mini prompt is reconstructed**, not the original (§5.6).
-9. **Eq. 7's sign** is a typesetting error; correct the equation, not the code (§6.1).
-
----
-
-# 9. Reviewer → experiment map
-
-| Reviewer comment | Experiment | Where |
-|---|---|---|
-| R1.2 parse quality | target accuracy + manual annotation | §4.1, §4.4 |
-| R1.3 / R4.6 Eq. 7 sign | distance-bias diagnostic | §6.1 |
-| R1.4 / R3.2 / R4.9 baseline comparison | main table, reproduced here | §4.7 |
-| R2 FLOPs / memory / latency | complexity suite | §5 |
-| R2 / R3.1 / R4.4 parser ablation, fixed architecture | variants A–E | §2.2 |
-| R2 / R4.3 do parse errors propagate | corruption sweep + correct/wrong split | §3.2, §4.3 |
-| R2 / R4 failure cases | failure selection + cause attribution | §4.5 |
-| R2 / R4.7 copy-paste isolated | copy-paste ablation | §2.3 |
-| R3.3 attention-layer count | hyper-parameter sweep | §2.5 |
-| R4.2 results by linguistic complexity | 4 measures + relation types | §4.2 |
-| R4.3 malformed parser output | variant E malformed rate; `drop` corruption mode | §2.2, §3.2 |
-| R4.4 parser removed without touching fusion | variant D | §2.2 |
-| R4.5 parsing offline? per-query cost? | offline check + parse latency | §5.3 |
-| R4.8 variance across seeds | seed runs + aggregation | §2.4, §4.6 |
-
----
-
-# 10. Environment and troubleshooting
+# 7. Environment and troubleshooting
 
 ## `pyg-lib` is mandatory for the model
 
@@ -1525,7 +1295,7 @@ anywhere — the annotation sheets use the standard library `csv` module.
 
 ---
 
-# 11. Full command list, in dependency order
+# 8. Full command list, in dependency order
 
 ```bash
 # ---- CPU, no model needed -------------------------------------------------
@@ -1539,7 +1309,6 @@ python experiments/ablation/parsers/eval_parser_target_accuracy.py --splits trai
 python experiments/complexity/measure_parsing_latency.py --mode offline_check
 python experiments/complexity/measure_parsing_latency.py --mode spacy --num_samples 500
 
-python experiments/diagnostics/verify_eq7_distance_bias.py
 python experiments/diagnostics/audit_scene_cache.py
 
 # ---- GPU: caches ----------------------------------------------------------
