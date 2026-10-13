@@ -109,6 +109,8 @@ data/
 Build with `experiments/ablation/parsing.py {spacy,clip,noparse}` or `parsing_smalllm.py`.
 Select at train time with `--parsing_folder`.
 
+We used gpt-4o-mini with the maximum output length set to 4096 tokens and the temperature set to 0 to minimize variability in the generated outputs; all other parameters were left at their default values.
+
 ---
 
 ## The experiment phases
