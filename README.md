@@ -11,6 +11,8 @@ Evaluated on **ScanRefer** and **ReferIt3D / Sr3D**. Results are in the paper, n
 ## Architecture
 
 ```
+[https://github.com/solgi-a/LM3D-VG/blob/main/DIAGRAM.png]
+
 point cloud (N x 10)                 description
       |                                   |
       v                                   v
