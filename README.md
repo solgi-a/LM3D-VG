@@ -6,7 +6,7 @@ Our paper, [**Enhancing 3D visual grounding through semantic-guided attention an
 with a 3D box. A language model parses the description into three semantic fields, fused
 with detected object proposals via attention and a spatial graph network.
 
-Evaluated on **ScanRefer** and **ReferIt3D / Sr3D**. Results are in the paper, not here.
+Evaluated on **ScanRefer** and **ReferIt3D (Nr3D / Sr3D)**. Results are in the paper.
 
 ---
 
