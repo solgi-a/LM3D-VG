@@ -11,21 +11,6 @@ Evaluated on **ScanRefer** and **ReferIt3D / Sr3D**. Results are in the paper, n
 ## Architecture
 <p align="center"><img src="DIAGRAM.png"/></p>
 
-```
-point cloud (N x 10)                 description
-      |                                   |
-      v                                   v
- PointNet++ -> Hough voting -> DETR   LLM parser [offline] -> GloVe + GRU
-      |                                   |
-      +------------> proposals -----------+
-                          |
-                          v
-                MatchModule: LGA -> A2F + TAF
-                          |
-                          v
-                 referred-object scores
-```
-
 | Module | File |
 |---|---|
 | `Pointnet2Backbone` | `models/backbone_module.py` |
