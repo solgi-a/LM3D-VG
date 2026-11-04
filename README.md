@@ -9,7 +9,7 @@ Evaluated on **ScanRefer** and **ReferIt3D / Sr3D**. Results are in the paper, n
 ---
 
 ## Architecture
-<p align="center"><img src="DIAGRAM.png" width="600px"/></p>
+<p align="center"><img src="DIAGRAM.png"/></p>
 
 ```
 point cloud (N x 10)                 description
