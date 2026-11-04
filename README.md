@@ -242,3 +242,21 @@ may predate the installed torch build. `run_analysis.ipynb` probes with a real k
 Built on [ScanRefer](https://github.com/daveredrum/ScanRefer),
 [VoteNet](https://github.com/facebookresearch/votenet) and
 [3DVG-Transformer](https://github.com/zlccccc/3DVG-Transformer).
+
+---
+
+## Citation
+
+```bibtex
+@article{SOLGI2026106250,
+  title   = {Enhancing 3D visual grounding through semantic-guided attention and graph networks with LLM-based sentence parsing},
+  author  = {Solgi, Ali and Ezoji, Mehdi},
+  journal = {Image and Vision Computing},
+  volume  = {176},
+  pages   = {106250},
+  year    = {2026},
+  issn    = {0262-8856},
+  doi     = {10.1016/j.imavis.2026.106250},
+  url     = {https://www.sciencedirect.com/science/article/pii/S0262885626003574}
+}
+```
