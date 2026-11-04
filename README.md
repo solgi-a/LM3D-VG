@@ -1,5 +1,7 @@
 # Enhancing 3D Visual Grounding through Semantic-Guided Attention and Graph Networks with LLM-Based Sentence Parsing
 
+Our paper, [**Enhancing 3D visual grounding through semantic-guided attention and graph networks with LLM-based sentence parsing**](https://doi.org/10.1016/j.imavis.2026.106250), has been published in the *Image and Vision Computing* journal.
+
 3D visual grounding: given a point cloud and a description, localise the referred object
 with a 3D box. A language model parses the description into three semantic fields, fused
 with detected object proposals via attention and a spatial graph network.
